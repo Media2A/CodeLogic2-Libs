@@ -253,6 +253,36 @@ public class MySQL2Library : ILibrary
     }
 
     /// <summary>
+    /// Synchronizes all model types in a specified namespace.
+    /// </summary>
+    public async Task<Dictionary<string, bool>> SyncNamespaceAsync(
+        string namespaceName,
+        string connectionId = "Default",
+        bool createBackup = true,
+        bool includeDerivedNamespaces = false)
+    {
+        if (_tableSyncService == null)
+        {
+            _logger?.Error("Cannot sync namespace: TableSyncService not initialized");
+            return new Dictionary<string, bool>();
+        }
+
+        try
+        {
+            return await _tableSyncService.SyncNamespaceAsync(
+                namespaceName,
+                connectionId,
+                createBackup,
+                includeDerivedNamespaces);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to sync namespace: {ex.Message}", ex);
+            return new Dictionary<string, bool>();
+        }
+    }
+
+    /// <summary>
     /// Registers a new database configuration at runtime.
     /// </summary>
     public void RegisterDatabase(string connectionId, DatabaseConfiguration config)

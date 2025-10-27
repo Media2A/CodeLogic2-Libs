@@ -87,6 +87,80 @@ public class TableSyncService
     }
 
     /// <summary>
+    /// Synchronizes all model types in a specified namespace.
+    /// </summary>
+    public async Task<Dictionary<string, bool>> SyncNamespaceAsync(
+        string namespaceName,
+        string connectionId = "Default",
+        bool createBackup = true,
+        bool includeDerivedNamespaces = false)
+    {
+        try
+        {
+            _logger?.Info($"Starting namespace synchronization for '{namespaceName}' (includeDerived: {includeDerivedNamespaces})");
+
+            // Get all types in the specified namespace
+            var modelTypes = GetTypesInNamespace(namespaceName, includeDerivedNamespaces)
+                .Where(t =>
+                    !t.IsAbstract &&
+                    !t.IsInterface &&
+                    !t.IsGenericTypeDefinition &&
+                    t.GetCustomAttribute<TableAttribute>() != null)
+                .ToArray();
+
+            if (!modelTypes.Any())
+            {
+                _logger?.Warning($"No model classes with [Table] attribute found in namespace '{namespaceName}'");
+                return new Dictionary<string, bool>();
+            }
+
+            _logger?.Info($"Found {modelTypes.Length} model(s) in namespace '{namespaceName}'. Starting synchronization...");
+
+            return await SyncTablesAsync(modelTypes, connectionId, createBackup);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to sync namespace '{namespaceName}': {ex.Message}", ex);
+            return new Dictionary<string, bool>();
+        }
+    }
+
+    /// <summary>
+    /// Gets all types in a specified namespace from all loaded assemblies.
+    /// </summary>
+    private IEnumerable<Type> GetTypesInNamespace(string namespaceName, bool includeDerivedNamespaces = false)
+    {
+        var assemblies = AppDomain.CurrentDomain.GetAssemblies();
+        var query = new List<Type>();
+
+        foreach (var assembly in assemblies)
+        {
+            try
+            {
+                var types = assembly.GetTypes()
+                    .Where(t => t.Namespace != null);
+
+                if (includeDerivedNamespaces)
+                {
+                    types = types.Where(t => t.Namespace.StartsWith(namespaceName));
+                }
+                else
+                {
+                    types = types.Where(t => t.Namespace == namespaceName);
+                }
+
+                query.AddRange(types);
+            }
+            catch (Exception ex)
+            {
+                _logger?.Debug($"Could not load types from assembly '{assembly.FullName}': {ex.Message}");
+            }
+        }
+
+        return query;
+    }
+
+    /// <summary>
     /// Internal method that performs the actual table synchronization.
     /// </summary>
     private async Task<bool> SyncTableInternalAsync(
