@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Package Information -->
+    <PackageId>CL.StorageS3</PackageId>
+    <Version>2.0.0</Version>
+    <Authors>Media2A</Authors>
+    <Company>Media2A</Company>
+    <Product>CodeLogic Framework - S3 Storage Library</Product>
+    <Description>Amazon S3 and S3-compatible storage library for CodeLogic Framework with connection pooling, health checks, and comprehensive storage operations</Description>
+    <Copyright>Copyright © Media2A 2024</Copyright>
+
+    <!-- Documentation -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- AWS S3 SDK -->
+    <PackageReference Include="AWSSDK.S3" Version="3.7.400" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- CodeLogic Framework References -->
+    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
+    <ProjectReference Include="..\CL.Core\CL.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Include documentation files in output -->
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="EXAMPLES.md" Pack="true" PackagePath="\" />
+    <None Include="CHANGELOG.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>

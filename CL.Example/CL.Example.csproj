@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>13</LangVersion>
+    <Authors>Media2A.com</Authors>
+    <Company>Media2A</Company>
+    <Product>CL.Example</Product>
+    <Description>Comprehensive example library demonstrating CodeLogic framework features</Description>
+    <Version>1.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\CL.Core\CL.Core.csproj" />
+    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
+  </ItemGroup>
+
+</Project>

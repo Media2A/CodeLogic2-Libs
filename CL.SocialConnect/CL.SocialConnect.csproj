@@ -1,0 +1,20 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>13</LangVersion>
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <Authors>Media2A.com</Authors>
+    <Company>Media2A</Company>
+    <Product>CL.SocialConnect</Product>
+    <Description>Social platform integration library for CodeLogic framework with Discord and Steam support</Description>
+    <Version>2.0.0</Version>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
+  </ItemGroup>
+
+</Project>

@@ -1,0 +1,41 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+    <LangVersion>latest</LangVersion>
+
+    <!-- Package Information -->
+    <PackageId>CL.GitHelper</PackageId>
+    <Version>2.0.0</Version>
+    <Authors>Media2A</Authors>
+    <Company>Media2A</Company>
+    <Product>CodeLogic Framework - Git Helper Library</Product>
+    <Description>Git repository management library for CodeLogic Framework with LibGit2Sharp integration, connection pooling, diagnostics, and comprehensive Git operations</Description>
+    <Copyright>Copyright © Media2A 2024</Copyright>
+
+    <!-- Documentation -->
+    <GenerateDocumentationFile>true</GenerateDocumentationFile>
+    <DocumentationFile>bin\$(Configuration)\$(TargetFramework)\$(AssemblyName).xml</DocumentationFile>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <!-- LibGit2Sharp for Git operations -->
+    <PackageReference Include="LibGit2Sharp" Version="0.30.0" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- CodeLogic Framework References -->
+    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
+    <ProjectReference Include="..\CL.Core\CL.Core.csproj" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <!-- Include documentation files in output -->
+    <None Include="README.md" Pack="true" PackagePath="\" />
+    <None Include="EXAMPLES.md" Pack="true" PackagePath="\" />
+    <None Include="CHANGELOG.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
+
+</Project>
