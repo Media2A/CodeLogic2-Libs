@@ -143,6 +143,7 @@ public static class TypeConverter
             return value switch
             {
                 DateTime dt => dt,
+                MySqlConnector.MySqlDateTime mdt => mdt.GetDateTime(),
                 string s when DateTime.TryParse(s, out var dt) => dt,
                 _ => DateTime.MinValue
             };
@@ -153,6 +154,7 @@ public static class TypeConverter
             {
                 DateTimeOffset dto => dto,
                 DateTime dt => new DateTimeOffset(dt),
+                MySqlConnector.MySqlDateTime mdt => new DateTimeOffset(mdt.GetDateTime()),
                 string s when DateTimeOffset.TryParse(s, out var dto) => dto,
                 _ => DateTimeOffset.MinValue
             };

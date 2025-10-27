@@ -308,7 +308,7 @@ public class SchemaAnalyzer
             }
         }
 
-        if (col.OnUpdateCurrentTimestamp && col.DataType == DataType.Timestamp)
+        if (col.OnUpdateCurrentTimestamp && (col.DataType == DataType.Timestamp || col.DataType == DataType.DateTime))
         {
             sb.Append(" ON UPDATE CURRENT_TIMESTAMP");
         }

@@ -164,6 +164,79 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    public async Task<OperationResult<PagedResult<T>>> GetPagedAsync(int page, int pageSize, int cacheTtl = 0, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var cacheKey = $"{_tableName}:paged:{page}:{pageSize}";
+
+            if (cacheTtl > 0 && _config.EnableCaching && _cache.TryGetValue<PagedResult<T>>(cacheKey, out var cached))
+                return OperationResult<PagedResult<T>>.Ok(cached);
+
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                var totalItems = (await CountAsync(cancellationToken)).Data;
+
+                var offset = (page - 1) * pageSize;
+                var sql = $"SELECT * FROM `{_tableName}` LIMIT @pageSize OFFSET @offset";
+                using var cmd = new MySqlCommand(sql, connection);
+                cmd.Parameters.AddWithValue("@pageSize", pageSize);
+                cmd.Parameters.AddWithValue("@offset", offset);
+
+                using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+
+                var entities = new List<T>();
+                while (await reader.ReadAsync(cancellationToken))
+                    entities.Add(MapReaderToEntity(reader));
+
+                var pagedResult = new PagedResult<T>
+                {
+                    Items = entities,
+                    TotalItems = totalItems,
+                    PageNumber = page,
+                    PageSize = pageSize
+                };
+
+                if (cacheTtl > 0 && _config.EnableCaching)
+                {
+                    _cache.Set(cacheKey, pagedResult, new MemoryCacheEntryOptions
+                    {
+                        AbsoluteExpirationRelativeToNow = TimeSpan.FromSeconds(cacheTtl),
+                        Size = entities.Count
+                    });
+                }
+
+                return OperationResult<PagedResult<T>>.Ok(pagedResult);
+            }, _connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to retrieve paged records from {_tableName}", ex);
+            return OperationResult<PagedResult<T>>.Fail($"Failed to retrieve paged records: {ex.Message}", ex);
+        }
+    }
+
+    public async Task<OperationResult<int>> CountAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                var sql = $"SELECT COUNT(*) FROM `{_tableName}`";
+                using var cmd = new MySqlCommand(sql, connection);
+                var result = await cmd.ExecuteScalarAsync(cancellationToken);
+                var count = Convert.ToInt32(result);
+                return OperationResult<int>.Ok(count);
+            }, _connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to count records in {_tableName}", ex);
+            return OperationResult<int>.Fail($"Failed to count records: {ex.Message}", ex);
+        }
+    }
+
+
     public async Task<OperationResult<T>> UpdateAsync(T entity, CancellationToken cancellationToken = default)
     {
         try
@@ -176,6 +249,16 @@ public class Repository<T> where T : class, new()
 
                 var pkColumnName = primaryKey.GetCustomAttribute<ColumnAttribute>()?.Name ?? primaryKey.Name;
                 var pkValue = primaryKey.GetValue(entity);
+
+                // Update fields that have OnUpdateCurrentTimestamp attribute
+                foreach (var prop in GetCachedProperties())
+                {
+                    var columnAttr = prop.GetCustomAttribute<ColumnAttribute>();
+                    if (columnAttr != null && columnAttr.OnUpdateCurrentTimestamp && prop.PropertyType == typeof(DateTime))
+                    {
+                        prop.SetValue(entity, DateTime.Now);
+                    }
+                }
 
                 var (setClause, parameters) = BuildUpdateParameters(entity);
                 var sql = $"UPDATE `{_tableName}` SET {setClause} WHERE `{pkColumnName}` = @__pk__";
@@ -232,6 +315,73 @@ public class Repository<T> where T : class, new()
         }
     }
 
+
+    public async Task<OperationResult<PagedResult<T>>> FindAsync(IEnumerable<WhereCondition> conditions, int page, int pageSize, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                var whereClauses = new List<string>();
+                var parameters = new Dictionary<string, object>();
+
+                foreach (var condition in conditions)
+                {
+                    whereClauses.Add($"`{condition.Column}` {condition.Operator} @{condition.Column}");
+                    parameters.Add($"@{condition.Column}", condition.Value);
+                }
+
+                var whereSql = whereClauses.Any() ? $"WHERE {string.Join(" AND ", whereClauses)}" : "";
+
+                var countSql = $"SELECT COUNT(*) FROM `{_tableName}` {whereSql}";
+                using var countCmd = new MySqlCommand(countSql, connection);
+                foreach (var param in parameters)
+                {
+                    countCmd.Parameters.AddWithValue(param.Key, param.Value);
+                }
+                var totalItems = Convert.ToInt32(await countCmd.ExecuteScalarAsync(cancellationToken));
+
+                var offset = (page - 1) * pageSize;
+                var sql = $"SELECT * FROM `{_tableName}` {whereSql} LIMIT @pageSize OFFSET @offset";
+                using var cmd = new MySqlCommand(sql, connection);
+                foreach (var param in parameters)
+                {
+                    cmd.Parameters.AddWithValue(param.Key, param.Value);
+                }
+                cmd.Parameters.AddWithValue("@pageSize", pageSize);
+                cmd.Parameters.AddWithValue("@offset", offset);
+
+                using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+
+                var entities = new List<T>();
+                while (await reader.ReadAsync(cancellationToken))
+                    entities.Add(MapReaderToEntity(reader));
+
+                var pagedResult = new PagedResult<T>
+                {
+                    Items = entities,
+                    TotalItems = totalItems,
+                    PageNumber = page,
+                    PageSize = pageSize
+                };
+
+                return OperationResult<PagedResult<T>>.Ok(pagedResult);
+            }, _connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to find records in {_tableName}", ex);
+            return OperationResult<PagedResult<T>>.Fail($"Failed to find records: {ex.Message}", ex);
+        }
+    }
+
+    private object? GetDefaultValue(Type type)
+    {
+        if (type.IsValueType)
+            return Activator.CreateInstance(type);
+        return null;
+    }
+
     private (string columns, string values, Dictionary<string, object?> parameters) BuildInsertParameters(T entity)
     {
         var columns = new List<string>();
@@ -247,8 +397,9 @@ public class Repository<T> where T : class, new()
             var columnName = columnAttr.Name ?? prop.Name;
             var value = prop.GetValue(entity);
 
-            if (value == null && !columnAttr.NotNull)
+            if (columnAttr.DefaultValue != null && value.Equals(GetDefaultValue(prop.PropertyType)))
                 continue;
+
 
             columns.Add($"`{columnName}`");
             values.Add($"@{columnName}");
@@ -268,11 +419,17 @@ public class Repository<T> where T : class, new()
         foreach (var prop in GetCachedProperties())
         {
             var columnAttr = prop.GetCustomAttribute<ColumnAttribute>();
-            if (columnAttr == null || columnAttr.Primary || columnAttr.AutoIncrement)
+            var columnName = columnAttr.Name ?? prop.Name;
+
+            if (columnAttr.Primary || columnAttr.AutoIncrement)
                 continue;
 
-            var columnName = columnAttr.Name ?? prop.Name;
             var value = prop.GetValue(entity);
+
+            // If OnUpdateCurrentTimestamp is true, the value is already set in UpdateAsync, so include it.
+            // Otherwise, if value is null and NotNull is false, skip it.
+            if (value == null && !columnAttr.NotNull && !columnAttr.OnUpdateCurrentTimestamp)
+                continue;
 
             setClauses.Add($"`{columnName}` = @{columnName}");
 
