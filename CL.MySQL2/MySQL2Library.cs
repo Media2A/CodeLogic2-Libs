@@ -338,7 +338,7 @@ public class MySQL2Library : ILibrary
                     _logger?.Info($"Loaded mysql.json with {configData.Count} configuration(s)");
 
                     // Try to load as multi-database config (check for known database connection IDs)
-                    var knownConnectionIds = new[] { "Default", "Analytics", "Reporting", "Archive", "Staging" };
+                    var knownConnectionIds = new[] { "Default", "Demo", "Analytics", "Reporting", "Archive", "Staging" };
                     var loadedConnections = new List<string>();
 
                     foreach (var connectionId in knownConnectionIds)
@@ -371,6 +371,16 @@ public class MySQL2Library : ILibrary
 
                             if (dbConfigDict != null)
                             {
+                                // Check if connection is enabled (default: true)
+                                var enabled = dbConfigDict.ContainsKey("enabled") ? bool.Parse(dbConfigDict["enabled"]?.ToString() ?? "true") : true;
+
+                                if (!enabled)
+                                {
+                                    Console.WriteLine($"    [CL.MySQL2] Skipping disabled connection '{connectionId}'");
+                                    _logger?.Debug($"Skipping disabled database configuration: {connectionId}");
+                                    continue;
+                                }
+
                                 Console.WriteLine($"    [CL.MySQL2] Loading connection '{connectionId}'");
 
                             // This is a multi-database config where connectionId is a sub-key with nested properties
@@ -381,8 +391,20 @@ public class MySQL2Library : ILibrary
                             var password = dbConfigDict.ContainsKey("password") ? dbConfigDict["password"]?.ToString() ?? "" : "";
                             var minPoolSize = dbConfigDict.ContainsKey("min_pool_size") ? int.Parse(dbConfigDict["min_pool_size"]?.ToString() ?? "5") : 5;
                             var maxPoolSize = dbConfigDict.ContainsKey("max_pool_size") ? int.Parse(dbConfigDict["max_pool_size"]?.ToString() ?? "100") : 100;
+                            var maxIdleTime = dbConfigDict.ContainsKey("max_idle_time") ? int.Parse(dbConfigDict["max_idle_time"]?.ToString() ?? "60") : 60;
                             var connectionTimeout = dbConfigDict.ContainsKey("connection_timeout") ? int.Parse(dbConfigDict["connection_timeout"]?.ToString() ?? "30") : 30;
+                            var commandTimeout = dbConfigDict.ContainsKey("command_timeout") ? int.Parse(dbConfigDict["command_timeout"]?.ToString() ?? "30") : 30;
+                            var characterSet = dbConfigDict.ContainsKey("character_set") ? dbConfigDict["character_set"]?.ToString() ?? "utf8mb4" : "utf8mb4";
+                            var sslModeStr = dbConfigDict.ContainsKey("ssl_mode") ? dbConfigDict["ssl_mode"]?.ToString() ?? "Preferred" : "Preferred";
                             var enableLogging = dbConfigDict.ContainsKey("enable_logging") ? bool.Parse(dbConfigDict["enable_logging"]?.ToString() ?? "false") : false;
+                            var enableCaching = dbConfigDict.ContainsKey("enable_caching") ? bool.Parse(dbConfigDict["enable_caching"]?.ToString() ?? "true") : true;
+                            var defaultCacheTtl = dbConfigDict.ContainsKey("default_cache_ttl") ? int.Parse(dbConfigDict["default_cache_ttl"]?.ToString() ?? "300") : 300;
+                            var enableAutoSync = dbConfigDict.ContainsKey("enable_auto_sync") ? bool.Parse(dbConfigDict["enable_auto_sync"]?.ToString() ?? "true") : true;
+                            var logSlowQueries = dbConfigDict.ContainsKey("log_slow_queries") ? bool.Parse(dbConfigDict["log_slow_queries"]?.ToString() ?? "true") : true;
+                            var slowQueryThreshold = dbConfigDict.ContainsKey("slow_query_threshold") ? int.Parse(dbConfigDict["slow_query_threshold"]?.ToString() ?? "1000") : 1000;
+
+                            // Parse SSL mode
+                            var sslMode = Enum.TryParse<SslMode>(sslModeStr, true, out var parsedSslMode) ? parsedSslMode : SslMode.Preferred;
 
                             Console.WriteLine($"    [CL.MySQL2] Parsed config - host={host}, port={port}, database={dbName}");
 
@@ -391,6 +413,7 @@ public class MySQL2Library : ILibrary
                                 var dbConfig = new DatabaseConfiguration
                                 {
                                     ConnectionId = connectionId,
+                                    Enabled = enabled,
                                     Host = host,
                                     Port = port,
                                     Database = dbName,
@@ -398,8 +421,17 @@ public class MySQL2Library : ILibrary
                                     Password = password,
                                     MinPoolSize = minPoolSize,
                                     MaxPoolSize = maxPoolSize,
+                                    MaxIdleTime = maxIdleTime,
                                     ConnectionTimeout = connectionTimeout,
-                                    EnableLogging = enableLogging
+                                    CommandTimeout = commandTimeout,
+                                    CharacterSet = characterSet,
+                                    SslMode = sslMode,
+                                    EnableLogging = enableLogging,
+                                    EnableCaching = enableCaching,
+                                    DefaultCacheTtl = defaultCacheTtl,
+                                    EnableAutoSync = enableAutoSync,
+                                    LogSlowQueries = logSlowQueries,
+                                    SlowQueryThreshold = slowQueryThreshold
                                 };
 
                                 RegisterDatabase(connectionId, dbConfig);
@@ -435,11 +467,12 @@ public class MySQL2Library : ILibrary
 
             if (_configManager != null)
             {
-                // Create multi-database template with examples
+                // Create multi-database template with comprehensive feature showcase
                 var defaultConfig = new Dictionary<string, object>
                 {
                     ["Default"] = new Dictionary<string, object>
                     {
+                        ["enabled"] = true,
                         ["host"] = "localhost",
                         ["port"] = 3306,
                         ["database"] = "main_database",
@@ -447,31 +480,50 @@ public class MySQL2Library : ILibrary
                         ["password"] = "",
                         ["min_pool_size"] = 5,
                         ["max_pool_size"] = 100,
+                        ["max_idle_time"] = 60,
                         ["connection_timeout"] = 30,
-                        ["enable_logging"] = false
+                        ["command_timeout"] = 30,
+                        ["character_set"] = "utf8mb4",
+                        ["ssl_mode"] = "Preferred",
+                        ["enable_logging"] = true,
+                        ["enable_caching"] = true,
+                        ["default_cache_ttl"] = 300,
+                        ["enable_auto_sync"] = true,
+                        ["log_slow_queries"] = true,
+                        ["slow_query_threshold"] = 1000
                     },
-                    ["Analytics"] = new Dictionary<string, object>
+                    ["Demo"] = new Dictionary<string, object>
                     {
+                        ["enabled"] = true,
                         ["host"] = "localhost",
                         ["port"] = 3306,
-                        ["database"] = "analytics_db",
+                        ["database"] = "demo_database",
                         ["username"] = "root",
                         ["password"] = "",
-                        ["min_pool_size"] = 3,
-                        ["max_pool_size"] = 50,
+                        ["min_pool_size"] = 5,
+                        ["max_pool_size"] = 100,
+                        ["max_idle_time"] = 60,
                         ["connection_timeout"] = 30,
-                        ["enable_logging"] = false
+                        ["command_timeout"] = 30,
+                        ["character_set"] = "utf8mb4",
+                        ["ssl_mode"] = "None",
+                        ["enable_logging"] = true,
+                        ["enable_caching"] = true,
+                        ["default_cache_ttl"] = 300,
+                        ["enable_auto_sync"] = true,
+                        ["log_slow_queries"] = true,
+                        ["slow_query_threshold"] = 500
                     }
                 };
 
                 await _configManager.GenerateDefaultAsync("mysql", defaultConfig);
                 Console.WriteLine($"    [CL.MySQL2] Created default multi-database configuration template at config/mysql.json");
-                Console.WriteLine($"    [CL.MySQL2] Configured with example databases: Default, Analytics");
+                Console.WriteLine($"    [CL.MySQL2] Configured with example databases: Default, Demo");
 
                 // Now try to load the databases we just created
                 _logger?.Info("Attempting to load generated multi-database configurations...");
                 var loadedConnections = new List<string>();
-                var knownConnectionIds = new[] { "Default", "Analytics", "Reporting", "Archive", "Staging" };
+                var knownConnectionIds = new[] { "Default", "Demo", "Analytics", "Reporting", "Archive", "Staging" };
 
                 foreach (var connectionId in knownConnectionIds)
                 {
@@ -479,6 +531,15 @@ public class MySQL2Library : ILibrary
 
                     if (configObject is Dictionary<string, object> dbConfigDict)
                     {
+                        // Check if connection is enabled (default: true)
+                        var enabled = dbConfigDict.ContainsKey("enabled") ? bool.Parse(dbConfigDict["enabled"]?.ToString() ?? "true") : true;
+
+                        if (!enabled)
+                        {
+                            _logger?.Debug($"Skipping disabled database configuration: {connectionId}");
+                            continue;
+                        }
+
                         var host = dbConfigDict.ContainsKey("host") ? dbConfigDict["host"]?.ToString() ?? "localhost" : "localhost";
                         var port = dbConfigDict.ContainsKey("port") ? int.Parse(dbConfigDict["port"]?.ToString() ?? "3306") : 3306;
                         var dbName = dbConfigDict.ContainsKey("database") ? dbConfigDict["database"]?.ToString() ?? "" : "";
@@ -486,14 +547,27 @@ public class MySQL2Library : ILibrary
                         var password = dbConfigDict.ContainsKey("password") ? dbConfigDict["password"]?.ToString() ?? "" : "";
                         var minPoolSize = dbConfigDict.ContainsKey("min_pool_size") ? int.Parse(dbConfigDict["min_pool_size"]?.ToString() ?? "5") : 5;
                         var maxPoolSize = dbConfigDict.ContainsKey("max_pool_size") ? int.Parse(dbConfigDict["max_pool_size"]?.ToString() ?? "100") : 100;
+                        var maxIdleTime = dbConfigDict.ContainsKey("max_idle_time") ? int.Parse(dbConfigDict["max_idle_time"]?.ToString() ?? "60") : 60;
                         var connectionTimeout = dbConfigDict.ContainsKey("connection_timeout") ? int.Parse(dbConfigDict["connection_timeout"]?.ToString() ?? "30") : 30;
+                        var commandTimeout = dbConfigDict.ContainsKey("command_timeout") ? int.Parse(dbConfigDict["command_timeout"]?.ToString() ?? "30") : 30;
+                        var characterSet = dbConfigDict.ContainsKey("character_set") ? dbConfigDict["character_set"]?.ToString() ?? "utf8mb4" : "utf8mb4";
+                        var sslModeStr = dbConfigDict.ContainsKey("ssl_mode") ? dbConfigDict["ssl_mode"]?.ToString() ?? "Preferred" : "Preferred";
                         var enableLogging = dbConfigDict.ContainsKey("enable_logging") ? bool.Parse(dbConfigDict["enable_logging"]?.ToString() ?? "false") : false;
+                        var enableCaching = dbConfigDict.ContainsKey("enable_caching") ? bool.Parse(dbConfigDict["enable_caching"]?.ToString() ?? "true") : true;
+                        var defaultCacheTtl = dbConfigDict.ContainsKey("default_cache_ttl") ? int.Parse(dbConfigDict["default_cache_ttl"]?.ToString() ?? "300") : 300;
+                        var enableAutoSync = dbConfigDict.ContainsKey("enable_auto_sync") ? bool.Parse(dbConfigDict["enable_auto_sync"]?.ToString() ?? "true") : true;
+                        var logSlowQueries = dbConfigDict.ContainsKey("log_slow_queries") ? bool.Parse(dbConfigDict["log_slow_queries"]?.ToString() ?? "true") : true;
+                        var slowQueryThreshold = dbConfigDict.ContainsKey("slow_query_threshold") ? int.Parse(dbConfigDict["slow_query_threshold"]?.ToString() ?? "1000") : 1000;
+
+                        // Parse SSL mode
+                        var sslMode = Enum.TryParse<SslMode>(sslModeStr, true, out var parsedSslMode) ? parsedSslMode : SslMode.Preferred;
 
                         if (!string.IsNullOrEmpty(dbName))
                         {
                             var dbConfig = new DatabaseConfiguration
                             {
                                 ConnectionId = connectionId,
+                                Enabled = enabled,
                                 Host = host,
                                 Port = port,
                                 Database = dbName,
@@ -501,8 +575,17 @@ public class MySQL2Library : ILibrary
                                 Password = password,
                                 MinPoolSize = minPoolSize,
                                 MaxPoolSize = maxPoolSize,
+                                MaxIdleTime = maxIdleTime,
                                 ConnectionTimeout = connectionTimeout,
-                                EnableLogging = enableLogging
+                                CommandTimeout = commandTimeout,
+                                CharacterSet = characterSet,
+                                SslMode = sslMode,
+                                EnableLogging = enableLogging,
+                                EnableCaching = enableCaching,
+                                DefaultCacheTtl = defaultCacheTtl,
+                                EnableAutoSync = enableAutoSync,
+                                LogSlowQueries = logSlowQueries,
+                                SlowQueryThreshold = slowQueryThreshold
                             };
 
                             RegisterDatabase(connectionId, dbConfig);

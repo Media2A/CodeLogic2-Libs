@@ -14,6 +14,13 @@ public class DatabaseConfiguration
     public string ConnectionId { get; set; } = "Default";
 
     /// <summary>
+    /// Gets or sets a value indicating whether this connection configuration is enabled.
+    /// When false, this connection will not be initialized or used.
+    /// Default is true.
+    /// </summary>
+    public bool Enabled { get; set; } = true;
+
+    /// <summary>
     /// Gets or sets the database server hostname or IP address.
     /// </summary>
     public string Host { get; set; } = "localhost";

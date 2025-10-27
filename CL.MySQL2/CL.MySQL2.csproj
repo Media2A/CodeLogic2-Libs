@@ -21,8 +21,8 @@
   </ItemGroup>
 
   <ItemGroup>
+    <ProjectReference Include="..\..\CodeLogic2\src\CodeLogic.csproj" />
     <ProjectReference Include="..\CL.Core\CL.Core.csproj" />
-    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
   </ItemGroup>
 
 </Project>
