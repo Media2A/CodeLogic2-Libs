@@ -1,0 +1,14 @@
+{
+  "permissions": {
+    "allow": [
+      "Read(//c/Projects/Mysql2 demo/**)",
+      "Bash(dotnet build:*)",
+      "Read(//c/Projects/git/CodeLogic2/src/**)",
+      "Read(//c/Projects/git/CodeLogic2-Libs/CL.Core/**)",
+      "Read(//c/Projects/git/CodeLogic2-Libs/CL.MySQL2/**)",
+      "Bash(cat:*)"
+    ],
+    "deny": [],
+    "ask": []
+  }
+}

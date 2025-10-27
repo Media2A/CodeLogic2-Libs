@@ -13,15 +13,18 @@ public class ConnectionManager : IDisposable
 {
     private readonly SQLiteConfiguration _config;
     private readonly ILogger _logger;
+    private readonly string? _dataDirectory;
     private readonly ConcurrentStack<PooledConnection> _pool = new();
+    private readonly ConcurrentDictionary<SqliteConnection, PooledConnection> _activeConnections = new();
     private readonly SemaphoreSlim _poolLock = new(1, 1);
     private readonly CancellationTokenSource _cts = new();
     private bool _disposed;
 
-    public ConnectionManager(SQLiteConfiguration config, ILogger logger)
+    public ConnectionManager(SQLiteConfiguration config, ILogger logger, string? dataDirectory = null)
     {
         _config = config ?? throw new ArgumentNullException(nameof(config));
         _logger = logger ?? throw new ArgumentNullException(nameof(logger));
+        _dataDirectory = dataDirectory;
         StartCleanupTask();
     }
 
@@ -39,6 +42,7 @@ public class ConnectionManager : IDisposable
             {
                 pooledConn.MarkInUse();
                 await pooledConn.Lock.WaitAsync(cancellationToken);
+                _activeConnections.TryAdd(pooledConn.Connection, pooledConn);
                 _logger.Trace("Reused pooled connection");
                 return pooledConn.Connection;
             }
@@ -61,6 +65,7 @@ public class ConnectionManager : IDisposable
             var pooled = new PooledConnection(connection);
             pooled.MarkInUse();
             await pooled.Lock.WaitAsync(cancellationToken);
+            _activeConnections.TryAdd(connection, pooled);
 
             _logger.Trace($"Created new connection: {_config.DatabasePath}");
             return connection;
@@ -81,19 +86,26 @@ public class ConnectionManager : IDisposable
         if (connection == null)
             return Task.CompletedTask;
 
-        var pooled = new PooledConnection(connection);
-        pooled.MarkAvailable();
-        pooled.Lock.Release();
-
-        if (_pool.Count < _config.MaxPoolSize)
+        // Get the actual PooledConnection that was tracked when acquired
+        if (_activeConnections.TryRemove(connection, out var pooled))
         {
-            _pool.Push(pooled);
-            _logger.Trace("Connection returned to pool");
+            pooled.MarkAvailable();
+            pooled.Lock.Release();
+
+            if (_pool.Count < _config.MaxPoolSize)
+            {
+                _pool.Push(pooled);
+                _logger.Trace("Connection returned to pool");
+            }
+            else
+            {
+                pooled.Dispose();
+                _logger.Trace("Connection disposed (pool full)");
+            }
         }
         else
         {
-            pooled.Dispose();
-            _logger.Trace("Connection disposed (pool full)");
+            _logger.Warning($"Connection not found in active connections");
         }
 
         return Task.CompletedTask;
@@ -119,9 +131,34 @@ public class ConnectionManager : IDisposable
 
     private string BuildConnectionString()
     {
+        // Use absolute path for database to ensure it's created in the correct location
+        var dbPath = _config.DatabasePath;
+
+        // If the path is relative, resolve it from the data directory or current directory
+        if (!Path.IsPathRooted(dbPath))
+        {
+            var basePath = _dataDirectory ?? Environment.CurrentDirectory;
+            dbPath = Path.Combine(basePath, dbPath);
+        }
+
+        // Ensure the directory exists for the database file
+        var dbDirectory = Path.GetDirectoryName(dbPath);
+        if (!string.IsNullOrEmpty(dbDirectory) && !Directory.Exists(dbDirectory))
+        {
+            try
+            {
+                Directory.CreateDirectory(dbDirectory);
+                _logger.Debug($"Created database directory: {dbDirectory}");
+            }
+            catch (Exception ex)
+            {
+                _logger.Warning($"Failed to create database directory '{dbDirectory}': {ex.Message}");
+            }
+        }
+
         var builder = new SqliteConnectionStringBuilder
         {
-            DataSource = _config.DatabasePath,
+            DataSource = dbPath,
             Mode = SqliteOpenMode.ReadWriteCreate,
             Cache = _config.CacheMode switch
             {
@@ -215,6 +252,14 @@ public class ConnectionManager : IDisposable
         _disposed = true;
         _cts.Cancel();
 
+        // Dispose all active connections
+        foreach (var activeConn in _activeConnections.Values)
+        {
+            activeConn.Dispose();
+        }
+        _activeConnections.Clear();
+
+        // Dispose all pooled connections
         while (_pool.TryPop(out var pooled))
         {
             pooled.Dispose();

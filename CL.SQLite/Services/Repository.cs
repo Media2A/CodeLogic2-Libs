@@ -45,6 +45,14 @@ public class Repository<T> where T : class, new()
                 if (colAttr?.IsAutoIncrement == true)
                     continue;
 
+                // Skip primary key columns (they should be auto-increment)
+                if (colAttr?.IsPrimaryKey == true)
+                    continue;
+
+                // Also skip the property named "Id" as a safety measure (likely auto-increment)
+                if (prop.Name == "Id" && colAttr?.ColumnName == null)
+                    continue;
+
                 var columnName = colAttr?.ColumnName ?? prop.Name;
                 columns.Add(columnName);
                 parameters.Add($"@{columnName}");
@@ -158,7 +166,8 @@ public class Repository<T> where T : class, new()
                 var columnName = colAttr?.ColumnName ?? prop.Name;
                 var value = prop.GetValue(entity);
 
-                if (colAttr?.IsPrimaryKey == true)
+                // Check if this is the primary key column
+                if (colAttr?.IsPrimaryKey == true || prop.Name == "Id")
                 {
                     pkValue = value;
                 }
