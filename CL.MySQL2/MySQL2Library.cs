@@ -16,6 +16,7 @@ public class MySQL2Library : ILibrary
     private ILogger? _logger;
     private ConnectionManager? _connectionManager;
     private ConfigurationManager? _configManager;
+    private TableSyncService? _tableSyncService;
     private readonly Dictionary<string, DatabaseConfiguration> _databaseConfigs = new();
 
     public ILibraryManifest Manifest { get; } = new MySQL2Manifest();
@@ -56,6 +57,13 @@ public class MySQL2Library : ILibrary
 
             // Test connections for all registered databases
             await TestDatabaseConnectionsAsync();
+
+            // Initialize TableSyncService
+            if (!string.IsNullOrEmpty(_context.DataDirectory))
+            {
+                _tableSyncService = new TableSyncService(_connectionManager, _context.DataDirectory, _logger);
+                _logger?.Info("TableSyncService initialized successfully");
+            }
 
             Console.WriteLine($"    [CL.MySQL2] ✓ Initialized successfully with {_databaseConfigs.Count} database(s)");
         }
@@ -185,6 +193,63 @@ public class MySQL2Library : ILibrary
     public ConnectionManager? GetConnectionManager()
     {
         return _connectionManager;
+    }
+
+    /// <summary>
+    /// Gets the table sync service for schema synchronization.
+    /// </summary>
+    public TableSyncService? GetTableSyncService()
+    {
+        return _tableSyncService;
+    }
+
+    /// <summary>
+    /// Synchronizes a single model type with its database table.
+    /// </summary>
+    public async Task<bool> SyncTableAsync<T>(
+        string connectionId = "Default",
+        bool createBackup = true) where T : class
+    {
+        if (_tableSyncService == null)
+        {
+            _logger?.Error("Cannot sync table: TableSyncService not initialized");
+            return false;
+        }
+
+        try
+        {
+            return await _tableSyncService.SyncTableAsync<T>(connectionId, createBackup);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to sync table: {ex.Message}", ex);
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// Synchronizes multiple model types at once.
+    /// </summary>
+    public async Task<Dictionary<string, bool>> SyncTablesAsync(
+        Type[] modelTypes,
+        string connectionId = "Default",
+        bool createBackup = true)
+    {
+        if (_tableSyncService == null)
+        {
+            _logger?.Error("Cannot sync tables: TableSyncService not initialized");
+            return new Dictionary<string, bool>();
+        }
+
+        try
+        {
+            return await _tableSyncService.SyncTablesAsync(modelTypes, connectionId, createBackup);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to sync tables: {ex.Message}", ex);
+            return new Dictionary<string, bool>();
+        }
     }
 
     /// <summary>
