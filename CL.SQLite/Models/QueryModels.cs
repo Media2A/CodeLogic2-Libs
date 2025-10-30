@@ -63,3 +63,144 @@ public enum TransactionIsolation
     /// </summary>
     Exclusive
 }
+
+/// <summary>
+/// Represents a WHERE condition for LINQ query building
+/// </summary>
+public class WhereCondition
+{
+    /// <summary>
+    /// Gets or sets the column name
+    /// </summary>
+    public required string Column { get; set; }
+
+    /// <summary>
+    /// Gets or sets the comparison operator (=, !=, >, <, >=, <=, LIKE, IN, IS, IS NOT)
+    /// </summary>
+    public required string Operator { get; set; }
+
+    /// <summary>
+    /// Gets or sets the value to compare against
+    /// </summary>
+    public object? Value { get; set; }
+
+    /// <summary>
+    /// Gets or sets the logical operator (AND, OR)
+    /// </summary>
+    public string LogicalOperator { get; set; } = "AND";
+}
+
+/// <summary>
+/// Represents an ORDER BY clause
+/// </summary>
+public class OrderByClause
+{
+    /// <summary>
+    /// Gets or sets the column name
+    /// </summary>
+    public required string Column { get; set; }
+
+    /// <summary>
+    /// Gets or sets the sort order (Asc or Desc)
+    /// </summary>
+    public required SortOrder Order { get; set; }
+}
+
+/// <summary>
+/// Sort order enumeration
+/// </summary>
+public enum SortOrder
+{
+    /// <summary>
+    /// Ascending order
+    /// </summary>
+    Asc,
+
+    /// <summary>
+    /// Descending order
+    /// </summary>
+    Desc
+}
+
+/// <summary>
+/// Represents an aggregate function (SUM, AVG, MIN, MAX, COUNT)
+/// </summary>
+public class AggregateFunction
+{
+    /// <summary>
+    /// Gets or sets the aggregate type
+    /// </summary>
+    public required AggregateType Type { get; set; }
+
+    /// <summary>
+    /// Gets or sets the column name to aggregate
+    /// </summary>
+    public required string Column { get; set; }
+
+    /// <summary>
+    /// Gets or sets the alias for the result
+    /// </summary>
+    public required string Alias { get; set; }
+}
+
+/// <summary>
+/// Aggregate function type enumeration
+/// </summary>
+public enum AggregateType
+{
+    /// <summary>
+    /// SUM aggregate
+    /// </summary>
+    Sum,
+
+    /// <summary>
+    /// AVG aggregate
+    /// </summary>
+    Avg,
+
+    /// <summary>
+    /// MIN aggregate
+    /// </summary>
+    Min,
+
+    /// <summary>
+    /// MAX aggregate
+    /// </summary>
+    Max,
+
+    /// <summary>
+    /// COUNT aggregate
+    /// </summary>
+    Count
+}
+
+/// <summary>
+/// Represents paginated results
+/// </summary>
+public class PagedResult<T> where T : class
+{
+    /// <summary>
+    /// Gets or sets the items on this page
+    /// </summary>
+    public required List<T> Items { get; set; }
+
+    /// <summary>
+    /// Gets or sets the current page number
+    /// </summary>
+    public int PageNumber { get; set; }
+
+    /// <summary>
+    /// Gets or sets the page size
+    /// </summary>
+    public int PageSize { get; set; }
+
+    /// <summary>
+    /// Gets or sets the total number of items
+    /// </summary>
+    public long TotalItems { get; set; }
+
+    /// <summary>
+    /// Gets the total number of pages
+    /// </summary>
+    public int TotalPages => (int)Math.Ceiling((double)TotalItems / PageSize);
+}

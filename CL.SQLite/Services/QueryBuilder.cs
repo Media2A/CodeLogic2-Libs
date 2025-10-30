@@ -1,16 +1,16 @@
 using CodeLogic.Abstractions;
-using CL.MySQL2.Core;
-using CL.MySQL2.Models;
-using MySqlConnector;
+using CodeLogic.Models;
+using CL.SQLite.Models;
+using Microsoft.Data.Sqlite;
 using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 
-namespace CL.MySQL2.Services;
+namespace CL.SQLite.Services;
 
 /// <summary>
 /// Type-safe fluent query builder for constructing complex SQL queries using LINQ expressions.
-/// Provides compile-time error checking and full IntelliSense support for database queries.
+/// Provides compile-time error checking and full IntelliSense support for SQLite database queries.
 /// </summary>
 public class QueryBuilder<T> where T : class, new()
 {
@@ -18,23 +18,20 @@ public class QueryBuilder<T> where T : class, new()
     private readonly List<string> _selectColumns = new();
     private readonly List<WhereCondition> _whereConditions = new();
     private readonly List<OrderByClause> _orderByClauses = new();
-    private readonly List<JoinClause> _joinClauses = new();
     private readonly List<AggregateFunction> _aggregateFunctions = new();
     private readonly List<string> _groupByColumns = new();
     private int? _limit;
     private int? _offset;
-    private string _connectionId = "Default";
     private readonly ConnectionManager _connectionManager;
-    private readonly ILogger? _logger;
+    private readonly ILogger _logger;
 
-    public QueryBuilder(ConnectionManager connectionManager, ILogger? logger = null, string connectionId = "Default")
+    public QueryBuilder(ConnectionManager connectionManager, ILogger logger)
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
-        _logger = logger;
-        _connectionId = connectionId;
+        _logger = logger ?? throw new ArgumentNullException(nameof(logger));
 
-        var tableAttr = typeof(T).GetCustomAttribute<TableAttribute>();
-        _tableName = tableAttr?.Name ?? typeof(T).Name;
+        var tableAttr = typeof(T).GetCustomAttribute<SQLiteTableAttribute>();
+        _tableName = tableAttr?.TableName ?? typeof(T).Name;
     }
 
     /// <summary>
@@ -43,7 +40,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> Where(Expression<Func<T, bool>> predicate)
     {
-        var conditions = CL.MySQL2.Core.ExpressionVisitor.Parse(predicate);
+        var conditions = ExpressionVisitor.Parse(predicate);
         _whereConditions.AddRange(conditions);
         return this;
     }
@@ -54,7 +51,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> OrderBy<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        var (column, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(keySelector, descending: false);
+        var (column, _) = ExpressionVisitor.ParseOrderBy(keySelector, descending: false);
         _orderByClauses.Add(new OrderByClause { Column = column, Order = SortOrder.Asc });
         return this;
     }
@@ -65,7 +62,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> OrderByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        var (column, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(keySelector, descending: true);
+        var (column, _) = ExpressionVisitor.ParseOrderBy(keySelector, descending: true);
         _orderByClauses.Add(new OrderByClause { Column = column, Order = SortOrder.Desc });
         return this;
     }
@@ -76,7 +73,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> ThenBy<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        var (column, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(keySelector, descending: false);
+        var (column, _) = ExpressionVisitor.ParseOrderBy(keySelector, descending: false);
         _orderByClauses.Add(new OrderByClause { Column = column, Order = SortOrder.Asc });
         return this;
     }
@@ -87,7 +84,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        var (column, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(keySelector, descending: true);
+        var (column, _) = ExpressionVisitor.ParseOrderBy(keySelector, descending: true);
         _orderByClauses.Add(new OrderByClause { Column = column, Order = SortOrder.Desc });
         return this;
     }
@@ -98,7 +95,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> GroupBy<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        var columns = CL.MySQL2.Core.ExpressionVisitor.ParseGroupBy<T, TKey>(keySelector);
+        var columns = ExpressionVisitor.ParseGroupBy<T, TKey>(keySelector);
         _groupByColumns.AddRange(columns);
         return this;
     }
@@ -109,7 +106,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> Select<TResult>(Expression<Func<T, TResult>> columns) where TResult : class
     {
-        var selectedColumns = CL.MySQL2.Core.ExpressionVisitor.ParseSelect(
+        var selectedColumns = ExpressionVisitor.ParseSelect(
             Expression.Lambda<Func<T, object?>>(
                 Expression.Convert(columns.Body, typeof(object)),
                 columns.Parameters
@@ -137,7 +134,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> Sum<TKey>(Expression<Func<T, TKey>> column, string alias = "sum")
     {
-        var (columnName, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(column, false);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column, false);
         return Aggregate(AggregateType.Sum, columnName, alias);
     }
 
@@ -147,7 +144,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> Avg<TKey>(Expression<Func<T, TKey>> column, string alias = "avg")
     {
-        var (columnName, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(column, false);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column, false);
         return Aggregate(AggregateType.Avg, columnName, alias);
     }
 
@@ -157,7 +154,7 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> Min<TKey>(Expression<Func<T, TKey>> column, string alias = "min")
     {
-        var (columnName, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(column, false);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column, false);
         return Aggregate(AggregateType.Min, columnName, alias);
     }
 
@@ -167,74 +164,43 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> Max<TKey>(Expression<Func<T, TKey>> column, string alias = "max")
     {
-        var (columnName, _) = CL.MySQL2.Core.ExpressionVisitor.ParseOrderBy(column, false);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column, false);
         return Aggregate(AggregateType.Max, columnName, alias);
     }
 
     /// <summary>
     /// Limits the number of results returned.
     /// </summary>
-    public QueryBuilder<T> Limit(int limit)
+    public QueryBuilder<T> Take(int count)
     {
-        _limit = limit;
+        _limit = count;
         return this;
     }
 
     /// <summary>
     /// Sets the offset for pagination.
     /// </summary>
-    public QueryBuilder<T> Offset(int offset)
-    {
-        _offset = offset;
-        return this;
-    }
-
-    /// <summary>
-    /// Sets the offset for pagination (alias for Offset).
-    /// </summary>
     public QueryBuilder<T> Skip(int skip)
     {
-        return Offset(skip);
-    }
-
-    /// <summary>
-    /// Sets the limit for pagination (alias for Limit).
-    /// </summary>
-    public QueryBuilder<T> Take(int take)
-    {
-        return Limit(take);
-    }
-
-    /// <summary>
-    /// Sets the connection ID to use for this query.
-    /// </summary>
-    public QueryBuilder<T> UseConnection(string connectionId)
-    {
-        _connectionId = connectionId;
+        _offset = skip;
         return this;
     }
 
     /// <summary>
     /// Executes the query and returns the results.
     /// </summary>
-    public async Task<OperationResult<List<T>>> ExecuteAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<List<T>>> ExecuteAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             var sql = BuildSelectQuery();
             var startTime = DateTime.UtcNow;
 
-            var config = _connectionManager.GetConfiguration(_connectionId);
-
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await _connectionManager.ExecuteAsync(async connection =>
             {
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = sql;
                 AddParametersToCommand(cmd);
-
-                if (config.EnableLogging)
-                {
-                    _logger?.Debug($"Executing query: {sql}");
-                }
 
                 using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
                 var entities = new List<T>();
@@ -245,60 +211,50 @@ public class QueryBuilder<T> where T : class, new()
                 }
 
                 var duration = DateTime.UtcNow - startTime;
-                if (config.LogSlowQueries && duration.TotalMilliseconds > config.SlowQueryThreshold)
-                {
-                    _logger?.Warning($"Slow query detected ({duration.TotalMilliseconds}ms): {sql}");
-                }
+                _logger.Debug($"Query executed in {duration.TotalMilliseconds}ms: {sql}");
 
-                return OperationResult<List<T>>.Ok(entities);
-            }, _connectionId, cancellationToken);
+                return Result<List<T>>.Success(entities);
+            }, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger?.Error($"Query execution failed: {ex.Message}", ex);
-            return OperationResult<List<T>>.Fail($"Query execution failed: {ex.Message}", ex);
+            _logger.Error($"Query execution failed: {ex.Message}", ex);
+            return Result<List<T>>.Failure($"Query execution failed: {ex.Message}", ex);
         }
-    }
-
-    /// <summary>
-    /// Executes the query and returns a single result.
-    /// </summary>
-    public async Task<OperationResult<T>> ExecuteSingleAsync(CancellationToken cancellationToken = default)
-    {
-        Limit(1);
-        var result = await ExecuteAsync(cancellationToken);
-
-        if (!result.Success)
-            return OperationResult<T>.Fail(result.ErrorMessage, result.Exception);
-
-        return OperationResult<T>.Ok(result.Data?.FirstOrDefault());
     }
 
     /// <summary>
     /// Executes the query and returns the first result or null.
     /// </summary>
-    public async Task<OperationResult<T>> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<T?>> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
     {
-        return await ExecuteSingleAsync(cancellationToken);
+        _limit = 1;
+        var result = await ExecuteAsync(cancellationToken);
+
+        if (!result.IsSuccess)
+            return Result<T?>.Failure(result.ErrorMessage ?? "Failed to execute query", result.Exception);
+
+        return Result<T?>.Success(result.Value?.FirstOrDefault());
     }
 
     /// <summary>
     /// Executes the query and returns paginated results.
     /// </summary>
-    public async Task<OperationResult<PagedResult<T>>> ExecutePagedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<Result<PagedResult<T>>> ToPagedAsync(int pageNumber, int pageSize, CancellationToken cancellationToken = default)
     {
         try
         {
             // Get total count
             var countQuery = BuildCountQuery();
 
-            var totalItems = await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            var totalItems = await _connectionManager.ExecuteAsync(async connection =>
             {
-                using var cmd = new MySqlCommand(countQuery, connection);
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = countQuery;
                 AddParametersToCommand(cmd);
 
                 return Convert.ToInt64(await cmd.ExecuteScalarAsync(cancellationToken));
-            }, _connectionId, cancellationToken);
+            }, cancellationToken);
 
             // Get page data
             _offset = (pageNumber - 1) * pageSize;
@@ -306,48 +262,49 @@ public class QueryBuilder<T> where T : class, new()
 
             var itemsResult = await ExecuteAsync(cancellationToken);
 
-            if (!itemsResult.Success)
-                return OperationResult<PagedResult<T>>.Fail(itemsResult.ErrorMessage, itemsResult.Exception);
+            if (!itemsResult.IsSuccess)
+                return Result<PagedResult<T>>.Failure(itemsResult.ErrorMessage ?? "Failed to execute query", itemsResult.Exception);
 
             var pagedResult = new PagedResult<T>
             {
-                Items = itemsResult.Data ?? new List<T>(),
+                Items = itemsResult.Value ?? new List<T>(),
                 PageNumber = pageNumber,
                 PageSize = pageSize,
                 TotalItems = totalItems
             };
 
-            return OperationResult<PagedResult<T>>.Ok(pagedResult);
+            return Result<PagedResult<T>>.Success(pagedResult);
         }
         catch (Exception ex)
         {
-            _logger?.Error($"Paged query execution failed: {ex.Message}", ex);
-            return OperationResult<PagedResult<T>>.Fail($"Paged query execution failed: {ex.Message}", ex);
+            _logger.Error($"Paged query execution failed: {ex.Message}", ex);
+            return Result<PagedResult<T>>.Failure($"Paged query execution failed: {ex.Message}", ex);
         }
     }
 
     /// <summary>
     /// Executes a COUNT query and returns the count.
     /// </summary>
-    public async Task<OperationResult<long>> CountAsync(CancellationToken cancellationToken = default)
+    public async Task<Result<long>> CountAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             var countQuery = BuildCountQuery();
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await _connectionManager.ExecuteAsync(async connection =>
             {
-                using var cmd = new MySqlCommand(countQuery, connection);
+                using var cmd = connection.CreateCommand();
+                cmd.CommandText = countQuery;
                 AddParametersToCommand(cmd);
 
                 var count = Convert.ToInt64(await cmd.ExecuteScalarAsync(cancellationToken));
-                return OperationResult<long>.Ok(count);
-            }, _connectionId, cancellationToken);
+                return Result<long>.Success(count);
+            }, cancellationToken);
         }
         catch (Exception ex)
         {
-            _logger?.Error($"Count query failed: {ex.Message}", ex);
-            return OperationResult<long>.Fail($"Count query failed: {ex.Message}", ex);
+            _logger.Error($"Count query failed: {ex.Message}", ex);
+            return Result<long>.Failure($"Count query failed: {ex.Message}", ex);
         }
     }
 
@@ -372,7 +329,7 @@ public class QueryBuilder<T> where T : class, new()
 
             if (_selectColumns.Any())
             {
-                sb.Append($"{string.Join(", ", _selectColumns.Select(c => $"`{c}`"))}, {string.Join(", ", aggParts)}");
+                sb.Append($"{string.Join(", ", _selectColumns)}, {string.Join(", ", aggParts)}");
             }
             else
             {
@@ -381,7 +338,7 @@ public class QueryBuilder<T> where T : class, new()
         }
         else if (_selectColumns.Any())
         {
-            sb.Append(string.Join(", ", _selectColumns.Select(c => $"`{c}`")));
+            sb.Append(string.Join(", ", _selectColumns));
         }
         else
         {
@@ -389,20 +346,7 @@ public class QueryBuilder<T> where T : class, new()
         }
 
         // FROM clause
-        sb.Append($" FROM `{_tableName}`");
-
-        // JOIN clauses
-        foreach (var join in _joinClauses)
-        {
-            var joinType = join.Type switch
-            {
-                JoinType.Left => "LEFT JOIN",
-                JoinType.Right => "RIGHT JOIN",
-                JoinType.Cross => "CROSS JOIN",
-                _ => "INNER JOIN"
-            };
-            sb.Append($" {joinType} `{join.Table}` ON {join.Condition}");
-        }
+        sb.Append($" FROM {_tableName}");
 
         // WHERE clause
         if (_whereConditions.Any())
@@ -422,16 +366,11 @@ public class QueryBuilder<T> where T : class, new()
                     {
                         paramNames.Add($"@p{i}_{j}");
                     }
-                    sb.Append($"`{condition.Column}` IN ({string.Join(", ", paramNames)})");
-                }
-                else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase) &&
-                         condition.Value is Array betweenArr && betweenArr.Length == 2)
-                {
-                    sb.Append($"`{condition.Column}` BETWEEN @p{i}_0 AND @p{i}_1");
+                    sb.Append($"{condition.Column} IN ({string.Join(", ", paramNames)})");
                 }
                 else
                 {
-                    sb.Append($"`{condition.Column}` {condition.Operator} @p{i}");
+                    sb.Append($"{condition.Column} {condition.Operator} @p{i}");
                 }
             }
         }
@@ -439,7 +378,7 @@ public class QueryBuilder<T> where T : class, new()
         // GROUP BY clause
         if (_groupByColumns.Any())
         {
-            sb.Append($" GROUP BY {string.Join(", ", _groupByColumns.Select(c => $"`{c}`"))}");
+            sb.Append($" GROUP BY {string.Join(", ", _groupByColumns)}");
         }
 
         // ORDER BY clause
@@ -447,7 +386,7 @@ public class QueryBuilder<T> where T : class, new()
         {
             sb.Append(" ORDER BY ");
             sb.Append(string.Join(", ", _orderByClauses.Select(o =>
-                $"`{o.Column}` {(o.Order == SortOrder.Asc ? "ASC" : "DESC")}")));
+                $"{o.Column} {(o.Order == SortOrder.Asc ? "ASC" : "DESC")}")));
         }
 
         // LIMIT and OFFSET
@@ -467,22 +406,7 @@ public class QueryBuilder<T> where T : class, new()
     private string BuildCountQuery()
     {
         var sb = new StringBuilder();
-        sb.Append("SELECT COUNT(*) FROM `");
-        sb.Append(_tableName);
-        sb.Append("`");
-
-        // JOIN clauses
-        foreach (var join in _joinClauses)
-        {
-            var joinType = join.Type switch
-            {
-                JoinType.Left => "LEFT JOIN",
-                JoinType.Right => "RIGHT JOIN",
-                JoinType.Cross => "CROSS JOIN",
-                _ => "INNER JOIN"
-            };
-            sb.Append($" {joinType} `{join.Table}` ON {join.Condition}");
-        }
+        sb.Append($"SELECT COUNT(*) FROM {_tableName}");
 
         // WHERE clause
         if (_whereConditions.Any())
@@ -502,16 +426,11 @@ public class QueryBuilder<T> where T : class, new()
                     {
                         paramNames.Add($"@p{i}_{j}");
                     }
-                    sb.Append($"`{condition.Column}` IN ({string.Join(", ", paramNames)})");
-                }
-                else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase) &&
-                         condition.Value is Array betweenArr && betweenArr.Length == 2)
-                {
-                    sb.Append($"`{condition.Column}` BETWEEN @p{i}_0 AND @p{i}_1");
+                    sb.Append($"{condition.Column} IN ({string.Join(", ", paramNames)})");
                 }
                 else
                 {
-                    sb.Append($"`{condition.Column}` {condition.Operator} @p{i}");
+                    sb.Append($"{condition.Column} {condition.Operator} @p{i}");
                 }
             }
         }
@@ -519,7 +438,7 @@ public class QueryBuilder<T> where T : class, new()
         return sb.ToString();
     }
 
-    private void AddParametersToCommand(MySqlCommand cmd)
+    private void AddParametersToCommand(SqliteCommand cmd)
     {
         for (int i = 0; i < _whereConditions.Count; i++)
         {
@@ -533,12 +452,6 @@ public class QueryBuilder<T> where T : class, new()
                     cmd.Parameters.AddWithValue($"@p{i}_{j}", arr.GetValue(j) ?? DBNull.Value);
                 }
             }
-            else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase) &&
-                     condition.Value is Array betweenArr && betweenArr.Length == 2)
-            {
-                cmd.Parameters.AddWithValue($"@p{i}_0", betweenArr.GetValue(0) ?? DBNull.Value);
-                cmd.Parameters.AddWithValue($"@p{i}_1", betweenArr.GetValue(1) ?? DBNull.Value);
-            }
             else
             {
                 cmd.Parameters.AddWithValue($"@p{i}", condition.Value ?? DBNull.Value);
@@ -546,20 +459,15 @@ public class QueryBuilder<T> where T : class, new()
         }
     }
 
-    private T MapReaderToEntity(MySqlDataReader reader)
+    private T MapReaderToEntity(SqliteDataReader reader)
     {
         var entity = new T();
-        var properties = typeof(T).GetProperties()
-            .Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null)
-            .ToArray();
+        var properties = typeof(T).GetProperties(BindingFlags.Public | BindingFlags.Instance);
 
         foreach (var prop in properties)
         {
-            var columnAttr = prop.GetCustomAttribute<ColumnAttribute>();
-            if (columnAttr == null)
-                continue;
-
-            var columnName = columnAttr.Name ?? prop.Name;
+            var colAttr = prop.GetCustomAttribute<SQLiteColumnAttribute>();
+            var columnName = colAttr?.ColumnName ?? prop.Name;
 
             try
             {
@@ -568,8 +476,7 @@ public class QueryBuilder<T> where T : class, new()
 
                 if (value != DBNull.Value)
                 {
-                    var convertedValue = TypeConverter.FromMySql(value, columnAttr.DataType, prop.PropertyType);
-                    prop.SetValue(entity, convertedValue);
+                    prop.SetValue(entity, value);
                 }
             }
             catch
@@ -579,30 +486,5 @@ public class QueryBuilder<T> where T : class, new()
         }
 
         return entity;
-    }
-}
-
-/// <summary>
-/// Non-generic query builder factory for creating query builders for specific types.
-/// </summary>
-public class QueryBuilder
-{
-    private readonly ConnectionManager _connectionManager;
-    private readonly ILogger? _logger;
-    private readonly string _connectionId;
-
-    public QueryBuilder(ConnectionManager connectionManager, ILogger? logger = null, string connectionId = "Default")
-    {
-        _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
-        _logger = logger;
-        _connectionId = connectionId;
-    }
-
-    /// <summary>
-    /// Creates a query builder for the specified model type.
-    /// </summary>
-    public QueryBuilder<T> For<T>() where T : class, new()
-    {
-        return new QueryBuilder<T>(_connectionManager, _logger, _connectionId);
     }
 }

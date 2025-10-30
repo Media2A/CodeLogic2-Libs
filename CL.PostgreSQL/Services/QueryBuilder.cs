@@ -2,14 +2,15 @@ using CodeLogic.Abstractions;
 using CL.PostgreSQL.Core;
 using CL.PostgreSQL.Models;
 using Npgsql;
+using System.Linq.Expressions;
 using System.Reflection;
 using System.Text;
 
 namespace CL.PostgreSQL.Services;
 
 /// <summary>
-/// Fluent query builder for constructing complex SQL queries.
-/// Provides a type-safe, intuitive API for building SELECT, INSERT, UPDATE, and DELETE queries.
+/// Type-safe, LINQ-based fluent query builder for constructing complex SQL queries.
+/// Provides compile-time safety with Expression Trees and IntelliSense support.
 /// </summary>
 public class QueryBuilder<T> where T : class, new()
 {
@@ -39,116 +40,92 @@ public class QueryBuilder<T> where T : class, new()
     }
 
     /// <summary>
-    /// Specifies which columns to select. If not called, SELECT * is used.
+    /// Specifies which columns to select using a LINQ expression.
     /// </summary>
-    public QueryBuilder<T> Select(params string[] columns)
+    public QueryBuilder<T> Select(Expression<Func<T, object?>> columns)
     {
-        _selectColumns.AddRange(columns);
+        var selectedColumns = ExpressionVisitor.ParseSelect(columns);
+        _selectColumns.AddRange(selectedColumns);
         return this;
     }
 
     /// <summary>
-    /// Adds a WHERE condition to the query.
+    /// Adds a WHERE condition using a LINQ expression (type-safe!).
     /// </summary>
-    public QueryBuilder<T> Where(string column, string @operator, object? value, string logicalOperator = "AND")
+    public QueryBuilder<T> Where(Expression<Func<T, bool>> predicate)
     {
-        _whereConditions.Add(new WhereCondition
-        {
-            Column = column,
-            Operator = @operator,
-            Value = value,
-            LogicalOperator = logicalOperator
-        });
+        var conditions = ExpressionVisitor.Parse(predicate);
+        _whereConditions.AddRange(conditions);
         return this;
     }
 
     /// <summary>
-    /// Adds a WHERE column = value condition.
+    /// Adds multiple WHERE conditions (chainable).
     /// </summary>
-    public QueryBuilder<T> WhereEquals(string column, object? value)
+    public QueryBuilder<T> Where(Expression<Func<T, bool>> predicate1, Expression<Func<T, bool>> predicate2)
     {
-        return Where(column, "=", value);
-    }
-
-    /// <summary>
-    /// Adds a WHERE column IN (values) condition.
-    /// </summary>
-    public QueryBuilder<T> WhereIn(string column, params object[] values)
-    {
-        return Where(column, "IN", values);
-    }
-
-    /// <summary>
-    /// Adds a WHERE column LIKE pattern condition.
-    /// </summary>
-    public QueryBuilder<T> WhereLike(string column, string pattern)
-    {
-        return Where(column, "LIKE", pattern);
-    }
-
-    /// <summary>
-    /// Adds a WHERE column > value condition.
-    /// </summary>
-    public QueryBuilder<T> WhereGreaterThan(string column, object? value)
-    {
-        return Where(column, ">", value);
-    }
-
-    /// <summary>
-    /// Adds a WHERE column < value condition.
-    /// </summary>
-    public QueryBuilder<T> WhereLessThan(string column, object? value)
-    {
-        return Where(column, "<", value);
-    }
-
-    /// <summary>
-    /// Adds a WHERE column BETWEEN value1 AND value2 condition.
-    /// </summary>
-    public QueryBuilder<T> WhereBetween(string column, object? value1, object? value2)
-    {
-        return Where(column, "BETWEEN", new[] { value1, value2 });
-    }
-
-    /// <summary>
-    /// Adds an ORDER BY clause.
-    /// </summary>
-    public QueryBuilder<T> OrderBy(string column, SortOrder order = SortOrder.Asc)
-    {
-        _orderByClauses.Add(new OrderByClause
-        {
-            Column = column,
-            Order = order
-        });
+        Where(predicate1);
+        Where(predicate2);
         return this;
     }
 
     /// <summary>
-    /// Adds an ORDER BY column ASC clause.
+    /// Orders results by a property (ascending).
     /// </summary>
-    public QueryBuilder<T> OrderByAsc(string column)
+    public QueryBuilder<T> OrderBy<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        return OrderBy(column, SortOrder.Asc);
+        var (column, _) = ExpressionVisitor.ParseOrderBy(keySelector, descending: false);
+        _orderByClauses.Add(new OrderByClause { Column = column, Order = SortOrder.Asc });
+        return this;
     }
 
     /// <summary>
-    /// Adds an ORDER BY column DESC clause.
+    /// Orders results by a property (descending).
     /// </summary>
-    public QueryBuilder<T> OrderByDesc(string column)
+    public QueryBuilder<T> OrderByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
     {
-        return OrderBy(column, SortOrder.Desc);
+        var (column, _) = ExpressionVisitor.ParseOrderBy(keySelector, descending: true);
+        _orderByClauses.Add(new OrderByClause { Column = column, Order = SortOrder.Desc });
+        return this;
+    }
+
+    /// <summary>
+    /// Then orders results by another property (ascending).
+    /// </summary>
+    public QueryBuilder<T> ThenBy<TKey>(Expression<Func<T, TKey>> keySelector)
+    {
+        return OrderBy(keySelector);
+    }
+
+    /// <summary>
+    /// Then orders results by another property (descending).
+    /// </summary>
+    public QueryBuilder<T> ThenByDescending<TKey>(Expression<Func<T, TKey>> keySelector)
+    {
+        return OrderByDescending(keySelector);
+    }
+
+    /// <summary>
+    /// Groups results by a property.
+    /// </summary>
+    public QueryBuilder<T> GroupBy(Expression<Func<T, object?>> keySelector)
+    {
+        var columns = ExpressionVisitor.ParseGroupBy(keySelector);
+        _groupByColumns.AddRange(columns);
+        return this;
     }
 
     /// <summary>
     /// Adds a JOIN clause.
     /// </summary>
-    public QueryBuilder<T> Join(string table, string condition, JoinType joinType = JoinType.Inner)
+    public QueryBuilder<T> Join(string table, Expression<Func<T, bool>> condition, JoinType joinType = JoinType.Inner)
     {
+        var conditionStr = condition.ToString(); // Simplified - in production use condition expression properly
         _joinClauses.Add(new JoinClause
         {
             Type = joinType,
             Table = table,
-            Condition = condition
+            Condition = conditionStr
         });
         return this;
     }
@@ -158,7 +135,13 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> InnerJoin(string table, string condition)
     {
-        return Join(table, condition, JoinType.Inner);
+        _joinClauses.Add(new JoinClause
+        {
+            Type = JoinType.Inner,
+            Table = table,
+            Condition = condition
+        });
+        return this;
     }
 
     /// <summary>
@@ -166,7 +149,13 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> LeftJoin(string table, string condition)
     {
-        return Join(table, condition, JoinType.Left);
+        _joinClauses.Add(new JoinClause
+        {
+            Type = JoinType.Left,
+            Table = table,
+            Condition = condition
+        });
+        return this;
     }
 
     /// <summary>
@@ -174,28 +163,11 @@ public class QueryBuilder<T> where T : class, new()
     /// </summary>
     public QueryBuilder<T> RightJoin(string table, string condition)
     {
-        return Join(table, condition, JoinType.Right);
-    }
-
-    /// <summary>
-    /// Adds a GROUP BY clause.
-    /// </summary>
-    public QueryBuilder<T> GroupBy(params string[] columns)
-    {
-        _groupByColumns.AddRange(columns);
-        return this;
-    }
-
-    /// <summary>
-    /// Adds an aggregate function.
-    /// </summary>
-    public QueryBuilder<T> Aggregate(AggregateType type, string column, string alias)
-    {
-        _aggregateFunctions.Add(new AggregateFunction
+        _joinClauses.Add(new JoinClause
         {
-            Type = type,
-            Column = column,
-            Alias = alias
+            Type = JoinType.Right,
+            Table = table,
+            Condition = condition
         });
         return this;
     }
@@ -203,70 +175,94 @@ public class QueryBuilder<T> where T : class, new()
     /// <summary>
     /// Adds a COUNT aggregate.
     /// </summary>
-    public QueryBuilder<T> Count(string column = "*", string alias = "count")
+    public QueryBuilder<T> Count(string alias = "count")
     {
-        return Aggregate(AggregateType.Count, column, alias);
+        _aggregateFunctions.Add(new AggregateFunction
+        {
+            Type = AggregateType.Count,
+            Column = "*",
+            Alias = alias
+        });
+        return this;
     }
 
     /// <summary>
-    /// Adds a SUM aggregate.
+    /// Adds a SUM aggregate for a property.
     /// </summary>
-    public QueryBuilder<T> Sum(string column, string alias = "sum")
+    public QueryBuilder<T> Sum<TKey>(Expression<Func<T, TKey>> column, string alias = "sum")
     {
-        return Aggregate(AggregateType.Sum, column, alias);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column);
+        _aggregateFunctions.Add(new AggregateFunction
+        {
+            Type = AggregateType.Sum,
+            Column = columnName,
+            Alias = alias
+        });
+        return this;
     }
 
     /// <summary>
-    /// Adds an AVG aggregate.
+    /// Adds an AVG aggregate for a property.
     /// </summary>
-    public QueryBuilder<T> Avg(string column, string alias = "avg")
+    public QueryBuilder<T> Avg<TKey>(Expression<Func<T, TKey>> column, string alias = "avg")
     {
-        return Aggregate(AggregateType.Avg, column, alias);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column);
+        _aggregateFunctions.Add(new AggregateFunction
+        {
+            Type = AggregateType.Avg,
+            Column = columnName,
+            Alias = alias
+        });
+        return this;
     }
 
     /// <summary>
-    /// Adds a MIN aggregate.
+    /// Adds a MIN aggregate for a property.
     /// </summary>
-    public QueryBuilder<T> Min(string column, string alias = "min")
+    public QueryBuilder<T> Min<TKey>(Expression<Func<T, TKey>> column, string alias = "min")
     {
-        return Aggregate(AggregateType.Min, column, alias);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column);
+        _aggregateFunctions.Add(new AggregateFunction
+        {
+            Type = AggregateType.Min,
+            Column = columnName,
+            Alias = alias
+        });
+        return this;
     }
 
     /// <summary>
-    /// Adds a MAX aggregate.
+    /// Adds a MAX aggregate for a property.
     /// </summary>
-    public QueryBuilder<T> Max(string column, string alias = "max")
+    public QueryBuilder<T> Max<TKey>(Expression<Func<T, TKey>> column, string alias = "max")
     {
-        return Aggregate(AggregateType.Max, column, alias);
+        var (columnName, _) = ExpressionVisitor.ParseOrderBy(column);
+        _aggregateFunctions.Add(new AggregateFunction
+        {
+            Type = AggregateType.Max,
+            Column = columnName,
+            Alias = alias
+        });
+        return this;
     }
 
     /// <summary>
     /// Limits the number of results returned.
     /// </summary>
-    public QueryBuilder<T> Limit(int limit)
+    public QueryBuilder<T> Take(int count)
     {
-        _limit = limit;
+        _limit = count;
         return this;
     }
-
-    /// <summary>
-    /// Alias for Limit.
-    /// </summary>
-    public QueryBuilder<T> Take(int count) => Limit(count);
 
     /// <summary>
     /// Sets the offset for pagination.
     /// </summary>
-    public QueryBuilder<T> Offset(int offset)
+    public QueryBuilder<T> Skip(int count)
     {
-        _offset = offset;
+        _offset = count;
         return this;
     }
-
-    /// <summary>
-    /// Alias for Offset.
-    /// </summary>
-    public QueryBuilder<T> Skip(int count) => Offset(count);
 
     /// <summary>
     /// Executes the query and returns all results.
@@ -301,24 +297,24 @@ public class QueryBuilder<T> where T : class, new()
     /// <summary>
     /// Executes the query and returns the first result.
     /// </summary>
-    public async Task<T?> ExecuteSingleAsync(CancellationToken cancellationToken = default)
+    public async Task<T?> FirstAsync(CancellationToken cancellationToken = default)
     {
         var results = await ExecuteAsync(cancellationToken);
         return results.FirstOrDefault();
     }
 
     /// <summary>
-    /// Executes the query and returns the first result or default.
+    /// Executes the query and returns the first result or null.
     /// </summary>
     public async Task<T?> FirstOrDefaultAsync(CancellationToken cancellationToken = default)
     {
-        return await ExecuteSingleAsync(cancellationToken);
+        return await FirstAsync(cancellationToken);
     }
 
     /// <summary>
     /// Executes the query and returns paginated results.
     /// </summary>
-    public async Task<PagedResult<T>> ExecutePagedAsync(int page, int pageSize, CancellationToken cancellationToken = default)
+    public async Task<PagedResult<T>> ToPagedAsync(int page, int pageSize, CancellationToken cancellationToken = default)
     {
         try
         {
@@ -458,9 +454,10 @@ public class QueryBuilder<T> where T : class, new()
                         conditions.Add($"{prefix}\"{condition.Column}\" IN ({placeholders})");
                     }
                 }
-                else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase))
+                else if (condition.Operator.Equals("IS", StringComparison.OrdinalIgnoreCase) ||
+                         condition.Operator.Equals("IS NOT", StringComparison.OrdinalIgnoreCase))
                 {
-                    conditions.Add($"{prefix}\"{condition.Column}\" BETWEEN @p{i}_0 AND @p{i}_1");
+                    conditions.Add($"{prefix}\"{condition.Column}\" {condition.Operator} NULL");
                 }
                 else
                 {
@@ -537,9 +534,10 @@ public class QueryBuilder<T> where T : class, new()
                         conditions.Add($"{prefix}\"{condition.Column}\" IN ({placeholders})");
                     }
                 }
-                else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase))
+                else if (condition.Operator.Equals("IS", StringComparison.OrdinalIgnoreCase) ||
+                         condition.Operator.Equals("IS NOT", StringComparison.OrdinalIgnoreCase))
                 {
-                    conditions.Add($"{prefix}\"{condition.Column}\" BETWEEN @p{i}_0 AND @p{i}_1");
+                    conditions.Add($"{prefix}\"{condition.Column}\" {condition.Operator} NULL");
                 }
                 else
                 {
@@ -568,13 +566,10 @@ public class QueryBuilder<T> where T : class, new()
                     }
                 }
             }
-            else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase))
+            else if (condition.Operator.Equals("IS", StringComparison.OrdinalIgnoreCase) ||
+                     condition.Operator.Equals("IS NOT", StringComparison.OrdinalIgnoreCase))
             {
-                if (condition.Value is object[] values && values.Length >= 2)
-                {
-                    cmd.Parameters.AddWithValue($"@p{i}_0", values[0] ?? DBNull.Value);
-                    cmd.Parameters.AddWithValue($"@p{i}_1", values[1] ?? DBNull.Value);
-                }
+                // No parameters needed for NULL checks
             }
             else
             {

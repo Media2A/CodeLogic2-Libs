@@ -37,6 +37,12 @@ public class User
 
     [Column(DataType = DataType.VarChar, Size = 255, NotNull = true, Unique = true)]
     public string? Email { get; set; }
+
+    [Column(DataType = DataType.Bool, DefaultValue = "true")]
+    public bool IsActive { get; set; }
+
+    [Column(DataType = DataType.Timestamp, DefaultValue = "CURRENT_TIMESTAMP")]
+    public DateTime CreatedAt { get; set; }
 }
 ```
 
@@ -55,13 +61,10 @@ var userRepo = library.GetRepository<User>();
 var user = new User { Name = "John", Email = "john@example.com" };
 var result = await userRepo.InsertAsync(user);
 
-// Query
-var allUsers = await userRepo.GetAllAsync();
-
-// Using QueryBuilder
+// Query with LINQ (Type-Safe!)
 var activeUsers = await library.GetQueryBuilder<User>()
-    .WhereEquals("IsActive", true)
-    .OrderByDesc("CreatedAt")
+    .Where(u => u.IsActive == true)
+    .OrderByDescending(u => u.CreatedAt)
     .ExecuteAsync();
 ```
 
@@ -72,7 +75,7 @@ var activeUsers = await library.GetQueryBuilder<User>()
 var repo = library.GetRepository<User>();
 
 // Create
-var newUser = new User { Name = "Alice" };
+var newUser = new User { Name = "Alice", Email = "alice@example.com" };
 await repo.InsertAsync(newUser);
 
 // Read
@@ -84,28 +87,74 @@ await repo.UpdateAsync(user);
 
 // Delete
 await repo.DeleteAsync(1);
+
+// Count
+var totalUsers = await repo.CountAsync();
 ```
 
-### Pattern 2: Complex Queries
+### Pattern 2: LINQ Queries - WHERE Clauses
 ```csharp
 var builder = library.GetQueryBuilder<User>();
 
-var results = await builder
-    .Select("Id", "Name", "Email")
-    .Where("CreatedAt", ">", DateTime.Now.AddMonths(-1))
-    .WhereIn("Status", "Active", "Premium")
-    .OrderByDesc("CreatedAt")
-    .Limit(10)
+// Simple condition
+var activeUsers = await builder
+    .Where(u => u.IsActive == true)
+    .ExecuteAsync();
+
+// Multiple conditions with AND
+var premiumUsers = await builder
+    .Where(u => u.IsActive && u.Name.Contains("Premium"))
+    .ExecuteAsync();
+
+// OR conditions
+var vipUsers = await builder
+    .Where(u => u.Email.EndsWith("@vip.com") || u.Email.EndsWith("@premium.com"))
+    .ExecuteAsync();
+
+// Date comparisons
+var recentUsers = await builder
+    .Where(u => u.CreatedAt >= DateTime.Now.AddMonths(-1))
     .ExecuteAsync();
 ```
 
-### Pattern 3: Pagination
+### Pattern 3: LINQ Queries - Sorting & Limiting
 ```csharp
 var builder = library.GetQueryBuilder<User>();
 
+// Simple ordering
+var sortedUsers = await builder
+    .Where(u => u.IsActive)
+    .OrderBy(u => u.Name)
+    .ExecuteAsync();
+
+// Descending order
+var newestUsers = await builder
+    .OrderByDescending(u => u.CreatedAt)
+    .ExecuteAsync();
+
+// Multiple sort criteria
+var sorted = await builder
+    .OrderBy(u => u.IsActive)
+    .ThenByDescending(u => u.CreatedAt)
+    .ExecuteAsync();
+
+// Limit results
+var topTen = await builder
+    .Where(u => u.IsActive)
+    .OrderByDescending(u => u.CreatedAt)
+    .Take(10)
+    .ExecuteAsync();
+```
+
+### Pattern 4: Pagination
+```csharp
+var builder = library.GetQueryBuilder<User>();
+
+// Paginated results
 var page = await builder
-    .WhereEquals("IsActive", true)
-    .ExecutePagedAsync(page: 1, pageSize: 20);
+    .Where(u => u.IsActive)
+    .OrderByDescending(u => u.CreatedAt)
+    .ToPagedAsync(page: 1, pageSize: 20);
 
 Console.WriteLine($"Total: {page.TotalItems}");
 Console.WriteLine($"Pages: {page.TotalPages}");
@@ -113,34 +162,131 @@ foreach (var user in page.Items)
 {
     Console.WriteLine($"- {user.Name}");
 }
-```
 
-### Pattern 4: Aggregates & Grouping
-```csharp
-var stats = await library.GetQueryBuilder<User>()
-    .Count("*", "total_users")
-    .Sum("TotalSpent", "revenue")
-    .Avg("Rating", "avg_rating")
-    .GroupBy("Country")
+// Skip and take alternative
+var results = await builder
+    .OrderBy(u => u.Id)
+    .Skip(20)        // Skip first 20
+    .Take(10)        // Get next 10
     .ExecuteAsync();
 ```
 
-### Pattern 5: Transactions
+### Pattern 5: String Operations
+```csharp
+var builder = library.GetQueryBuilder<User>();
+
+// Contains (LIKE with %)
+var matchingUsers = await builder
+    .Where(u => u.Email.Contains("@company.com"))
+    .ExecuteAsync();
+
+// StartsWith (LIKE prefix)
+var adminUsers = await builder
+    .Where(u => u.Name.StartsWith("Admin"))
+    .ExecuteAsync();
+
+// EndsWith (LIKE suffix)
+var gmailUsers = await builder
+    .Where(u => u.Email.EndsWith("@gmail.com"))
+    .ExecuteAsync();
+
+// Combined string operations
+var filtered = await builder
+    .Where(u => u.Name.Contains("John") && u.Email.EndsWith("@example.com"))
+    .ExecuteAsync();
+```
+
+### Pattern 6: Collection Filtering (IN clause)
+```csharp
+var builder = library.GetQueryBuilder<User>();
+
+// Filter by ID list
+var userIds = new[] { 1, 2, 3, 4, 5 };
+var specificUsers = await builder
+    .Where(u => userIds.Contains((int)u.Id))
+    .ExecuteAsync();
+
+// Filter by status list
+var statuses = new[] { "Active", "Premium", "Trial" };
+var statusUsers = await builder
+    .Where(u => statuses.Contains(u.Status))
+    .ExecuteAsync();
+```
+
+### Pattern 7: Aggregates & Statistics
+```csharp
+var builder = library.GetQueryBuilder<User>();
+
+// Count
+var totalActive = await builder
+    .Where(u => u.IsActive)
+    .CountAsync();
+
+// Sum (if you have numeric columns)
+var builder2 = library.GetQueryBuilder<Order>();
+var totalRevenue = await builder2
+    .Sum(o => o.Amount, "total_revenue")
+    .ExecuteAsync();
+
+// Average
+var avgRating = await builder2
+    .Avg(o => o.Rating, "avg_rating")
+    .ExecuteAsync();
+
+// Min/Max
+var stats = await builder2
+    .Where(o => o.IsCompleted)
+    .ExecuteAsync();  // Then use LINQ to Objects for Min/Max
+```
+
+### Pattern 8: Transactions
 ```csharp
 await library.GetConnectionManager()
     .ExecuteWithTransactionAsync(async (connection, transaction) =>
     {
+        var userRepo = library.GetRepository<User>();
+        var postRepo = library.GetRepository<Post>();
+
         // Multiple operations in single transaction
-        var user = new User { Name = "Bob" };
+        var user = new User { Name = "Bob", Email = "bob@example.com" };
         var result = await userRepo.InsertAsync(user);
 
-        var post = new Post { UserId = user.Id, Title = "Hello" };
+        var post = new Post { UserId = user.Id, Title = "Hello World" };
         await postRepo.InsertAsync(post);
 
-        // Transaction commits automatically
+        // Transaction commits automatically on success
         return true;
     });
 ```
+
+## LINQ Comparison: Before & After
+
+### Before (Magic Strings - ❌ Not Type-Safe)
+```csharp
+// ❌ Typo won't be caught until runtime!
+var results = await builder
+    .Where("IsActiv", "=", true)        // Typo in column name
+    .Where("Age", ">", "eighteen")       // Type mismatch
+    .OrderByDesc("CretedAt")              // Another typo
+    .ExecuteAsync();
+```
+
+### After (LINQ - ✅ Type-Safe!)
+```csharp
+// ✅ Compiler catches errors immediately!
+var results = await builder
+    .Where(u => u.IsActive == true)      // ✓ IntelliSense helps
+    .Where(u => u.Age > 18)              // ✓ Type-safe comparison
+    .OrderByDescending(u => u.CreatedAt) // ✓ Compiler checks property
+    .ExecuteAsync();
+```
+
+**Benefits of LINQ:**
+- ✅ Compile-time error detection
+- ✅ Full IntelliSense support in your IDE
+- ✅ Safe refactoring (rename properties and queries update automatically)
+- ✅ No magic strings
+- ✅ Type-safe comparisons
 
 ## Model Definition Patterns
 
@@ -224,8 +370,36 @@ public class Configuration
     [Column(DataType = DataType.VarChar, Size = 255)]
     public string? Key { get; set; }
 
-    [Column(DataType = DataType.Jsonb)]  // Better performance
+    [Column(DataType = DataType.Jsonb)]  // Better performance in PostgreSQL
     public string? Value { get; set; }
+}
+```
+
+## Query Debugging
+
+### View Generated SQL
+```csharp
+var builder = library.GetQueryBuilder<User>();
+
+var sql = builder
+    .Where(u => u.IsActive && u.Email.Contains("@company.com"))
+    .OrderByDescending(u => u.CreatedAt)
+    .Take(10)
+    .ToSql();
+
+Console.WriteLine(sql);
+// Output: SELECT * FROM "public"."User" WHERE "IsActive" = @p0 AND "Email" LIKE @p1 ORDER BY "CreatedAt" DESC LIMIT 10
+```
+
+### First or Default
+```csharp
+var firstUser = await library.GetQueryBuilder<User>()
+    .Where(u => u.Email == "john@example.com")
+    .FirstOrDefaultAsync();
+
+if (firstUser != null)
+{
+    Console.WriteLine($"Found: {firstUser.Name}");
 }
 ```
 
@@ -248,6 +422,23 @@ public class Configuration
 await library.SyncTableAsync<User>();
 ```
 
+### Issue: Type Safety Errors in LINQ
+**Solution**: Ensure property names match column names and use correct types
+```csharp
+// ✓ Correct - property type matches comparison
+public string Email { get; set; }
+.Where(u => u.Email == "test@example.com")
+
+// ✗ Wrong - comparison type mismatch
+.Where(u => u.Email == 123)  // Compiler error!
+
+// ✓ Correct - property exists with this exact name
+.Where(u => u.IsActive == true)
+
+// ✗ Wrong - property typo
+.Where(u => u.IsActiv == true)  // Compiler error!
+```
+
 ### Issue: Type Conversion Error
 **Solution**: Verify column DataType matches property type
 ```csharp
@@ -261,11 +452,14 @@ public string? Name { get; set; }
 ```
 
 ### Issue: Performance Issues
-**Solution**: Enable caching and check indexes
+**Solution**: Enable caching, use indexes, and check queries
 ```json
 {
   "enable_caching": true,
-  "default_cache_ttl": 300
+  "default_cache_ttl": 300,
+  "enable_logging": true,
+  "log_slow_queries": true,
+  "slow_query_threshold": 1000
 }
 ```
 
@@ -322,20 +516,6 @@ foreach (var (table, success) in results)
 }
 ```
 
-### Query Debugging
-```csharp
-var builder = library.GetQueryBuilder<User>();
-
-var sql = builder
-    .Select("Id", "Name")
-    .WhereEquals("IsActive", true)
-    .OrderByDesc("CreatedAt")
-    .ToSql();
-
-Console.WriteLine(sql);
-// Output: SELECT "Id", "Name" FROM "public"."User" WHERE "IsActive" = @p0 ORDER BY "CreatedAt" DESC
-```
-
 ### Health Checks
 ```csharp
 var health = await library.HealthCheckAsync();
@@ -356,32 +536,46 @@ if (!health.IsHealthy)
    repo.InsertAsync(entity).Wait();  // ✗ Bad (blocks thread)
    ```
 
-2. **Use caching for read-heavy operations**
+2. **Use LINQ instead of magic strings**
+   ```csharp
+   .Where(u => u.IsActive)          // ✓ Good - type-safe
+   .Where("IsActive", "=", true)    // ✗ Bad - magic strings
+   ```
+
+3. **Use caching for read-heavy operations**
    ```csharp
    var user = await repo.GetByIdAsync(1, cacheTtl: 300);  // Cache 5 minutes
    ```
 
-3. **Use transactions for multi-step operations**
+4. **Use transactions for multi-step operations**
    ```csharp
    await connectionManager.ExecuteWithTransactionAsync(async (conn, trans) =>
    {
-       // Multiple operations
+       // Multiple operations with automatic rollback on error
    });
    ```
 
-4. **Index frequently queried columns**
+5. **Index frequently queried columns**
    ```csharp
    [Column(DataType = DataType.VarChar, Index = true)]
    public string? Email { get; set; }
    ```
 
-5. **Use pagination for large datasets**
+6. **Use pagination for large datasets**
    ```csharp
-   var page = await builder.ExecutePagedAsync(1, 20);
+   var page = await builder.ToPagedAsync(1, 20);
+   ```
+
+7. **Debug queries with ToSql()**
+   ```csharp
+   var sql = builder.Where(u => u.IsActive).ToSql();
+   Console.WriteLine($"Generated SQL: {sql}");
    ```
 
 ## Resources
 
+- [README.md](README.md) - Comprehensive feature documentation
+- [IMPLEMENTATION_SUMMARY.md](IMPLEMENTATION_SUMMARY.md) - Architecture and design patterns
 - [PostgreSQL Documentation](https://www.postgresql.org/docs/)
 - [Npgsql Documentation](https://www.npgsql.org/doc/)
 - [CodeLogic Framework](https://github.com/your-org/codelogic)
@@ -397,4 +591,4 @@ For issues or questions:
 
 ---
 
-**Happy coding! 🚀**
+**Happy coding with type-safe LINQ! 🚀**

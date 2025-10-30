@@ -1,9 +1,10 @@
 # CL.MySQL2 - MySQL Library for CodeLogic Framework
 
-A fully integrated MySQL database library for the CodeLogic framework, featuring connection pooling, caching, repository pattern, and comprehensive ORM support.
+A fully integrated MySQL database library for the CodeLogic framework, featuring **type-safe LINQ query support**, connection pooling, caching, repository pattern, and comprehensive ORM support.
 
 ## Features
 
+- **Type-Safe LINQ Queries** ⭐ - Compile-time error checking with lambda expressions
 - **Full CodeLogic Integration**: Seamlessly integrates with the framework's logging, configuration, and dependency injection systems
 - **Connection Management**: Optimized connection pooling with automatic connection lifecycle management
 - **Repository Pattern**: Generic repository implementation for type-safe CRUD operations
@@ -126,101 +127,165 @@ var updateResult = await userRepository.UpdateAsync(user);
 var deleteResult = await userRepository.DeleteAsync(1);
 ```
 
-### Advanced Queries with QueryBuilder
+### Type-Safe LINQ Queries ⭐
 
-The QueryBuilder provides a fluent API for constructing complex SQL queries:
+The QueryBuilder now supports type-safe LINQ expressions for compile-time error checking!
+
+#### Simple Queries
 
 ```csharp
-// Get query builder
 var queryBuilder = mysql2.GetQueryBuilder<User>();
 
-// Simple query
+// Simple WHERE clause (type-safe!)
 var activeUsers = await queryBuilder
-    .Where("status", "=", "active")
-    .OrderBy("created_at", SortOrder.Desc)
+    .Where(u => u.IsActive == true)
     .ExecuteAsync();
 
-// Complex filtering
-var result = await queryBuilder
-    .Where("age", ">=", 18)
-    .Where("city", "=", "New York", "AND")
-    .WhereLike("email", "%@gmail.com")
-    .OrderByDesc("last_login")
-    .Limit(50)
+// Multiple conditions with AND
+var results = await queryBuilder
+    .Where(u => u.IsActive && u.Age > 18)
     .ExecuteAsync();
 
-// Using helper methods
-var products = await queryBuilder
-    .WhereGreaterThan("price", 100)
-    .WhereLessThan("price", 500)
-    .WhereIn("category", "Electronics", "Computers", "Gaming")
-    .OrderByAsc("price")
+// OR conditions
+var vipUsers = await queryBuilder
+    .Where(u => u.Email.EndsWith("@vip.com") || u.Email.EndsWith("@premium.com"))
     .ExecuteAsync();
 
-// Pagination
-var pagedResult = await queryBuilder
-    .Where("active", "=", true)
-    .OrderBy("created_at", SortOrder.Desc)
-    .ExecutePagedAsync(pageNumber: 2, pageSize: 20);
+// Date comparisons
+var recentUsers = await queryBuilder
+    .Where(u => u.CreatedAt >= DateTime.Now.AddMonths(-1))
+    .ExecuteAsync();
+```
 
-Console.WriteLine($"Page {pagedResult.Data.PageNumber} of {pagedResult.Data.TotalPages}");
-Console.WriteLine($"Total items: {pagedResult.Data.TotalItems}");
-foreach (var user in pagedResult.Data.Items)
-{
-    Console.WriteLine($"User: {user.Username}");
-}
+#### Sorting & Pagination
 
-// Aggregations
-var stats = await queryBuilder
-    .Where("status", "=", "completed")
-    .GroupBy("user_id")
-    .Count("*", "order_count")
-    .Sum("total_amount", "total_spent")
+```csharp
+// Simple ordering
+var sortedUsers = await queryBuilder
+    .Where(u => u.IsActive)
+    .OrderBy(u => u.Username)
     .ExecuteAsync();
 
-// Get single result
-var firstUser = await queryBuilder
-    .WhereEquals("email", "john@example.com")
-    .FirstOrDefaultAsync();
-
-// Get count
-var activeCount = await queryBuilder
-    .Where("status", "=", "active")
-    .CountAsync();
-
-// Joins
-var ordersWithUsers = await queryBuilder
-    .Select("orders.*", "users.name as user_name", "users.email")
-    .LeftJoin("users", "orders.user_id = users.id")
-    .Where("orders.status", "=", "pending")
+// Descending order
+var newestUsers = await queryBuilder
+    .OrderByDescending(u => u.CreatedAt)
     .ExecuteAsync();
 
-// Range queries
-var recentOrders = await queryBuilder
-    .WhereBetween("created_at", DateTime.Now.AddDays(-30), DateTime.Now)
-    .OrderByDesc("created_at")
+// Multiple sort criteria
+var sorted = await queryBuilder
+    .OrderBy(u => u.IsActive)
+    .ThenByDescending(u => u.CreatedAt)
     .ExecuteAsync();
 
-// Using Skip/Take (alternative to Offset/Limit)
-var secondPage = await queryBuilder
-    .OrderBy("id")
-    .Skip(20)
+// Limit results
+var topTen = await queryBuilder
+    .Where(u => u.IsActive)
+    .OrderByDescending(u => u.CreatedAt)
     .Take(10)
     .ExecuteAsync();
 
-// Debug: View generated SQL
-var query = mysql2.GetQueryBuilder<User>()
-    .Where("age", ">", 18)
-    .OrderBy("name");
-Console.WriteLine(query.ToSql());
-// Output: SELECT * FROM `users` WHERE `age` > @p0 ORDER BY `name` ASC
+// Pagination
+var page = await queryBuilder
+    .Where(u => u.IsActive)
+    .OrderByDescending(u => u.CreatedAt)
+    .ExecutePagedAsync(page: 1, pageSize: 20);
 
-// Non-generic usage
-var qb = mysql2.GetQueryBuilder();
-var users = await qb.For<User>()
-    .Where("active", "=", true)
+Console.WriteLine($"Total: {page.Data.TotalItems}");
+Console.WriteLine($"Pages: {page.Data.TotalPages}");
+```
+
+#### String Operations
+
+```csharp
+// Contains (LIKE with %)
+var matchingUsers = await queryBuilder
+    .Where(u => u.Email.Contains("@company.com"))
+    .ExecuteAsync();
+
+// StartsWith (LIKE prefix)
+var adminUsers = await queryBuilder
+    .Where(u => u.Username.StartsWith("admin_"))
+    .ExecuteAsync();
+
+// EndsWith (LIKE suffix)
+var gmailUsers = await queryBuilder
+    .Where(u => u.Email.EndsWith("@gmail.com"))
+    .ExecuteAsync();
+
+// Combined string operations
+var filtered = await queryBuilder
+    .Where(u => u.Username.Contains("John") && u.Email.EndsWith("@example.com"))
     .ExecuteAsync();
 ```
+
+#### Collection Filtering (IN clause)
+
+```csharp
+// Filter by ID list
+var userIds = new[] { 1, 2, 3, 4, 5 };
+var specificUsers = await queryBuilder
+    .Where(u => userIds.Contains(u.Id))
+    .ExecuteAsync();
+
+// Filter by status list
+var statuses = new[] { "Active", "Premium", "Trial" };
+var statusUsers = await queryBuilder
+    .Where(u => statuses.Contains(u.Status))
+    .ExecuteAsync();
+```
+
+#### Aggregates & Statistics
+
+```csharp
+// Count
+var totalActive = await queryBuilder
+    .Where(u => u.IsActive)
+    .CountAsync();
+
+// Sum
+var totalRevenue = await queryBuilder
+    .Sum(o => o.Amount, "total_revenue")
+    .ExecuteAsync();
+
+// Average
+var avgRating = await queryBuilder
+    .Avg(o => o.Rating, "avg_rating")
+    .ExecuteAsync();
+
+// Min/Max
+var stats = await queryBuilder
+    .Where(o => o.IsCompleted)
+    .Min(o => o.Price, "min_price")
+    .Max(o => o.Price, "max_price")
+    .ExecuteAsync();
+```
+
+#### First or Default
+
+```csharp
+var firstUser = await queryBuilder
+    .Where(u => u.Email == "john@example.com")
+    .FirstOrDefaultAsync();
+
+if (firstUser.Success && firstUser.Data != null)
+{
+    Console.WriteLine($"Found: {firstUser.Data.Username}");
+}
+```
+
+#### View Generated SQL
+
+```csharp
+var sql = queryBuilder
+    .Where(u => u.IsActive && u.Email.Contains("@company.com"))
+    .OrderByDescending(u => u.CreatedAt)
+    .Take(10)
+    .ToSql();
+
+Console.WriteLine(sql);
+// Output: SELECT * FROM `users` WHERE `IsActive` = @p0 AND `Email` LIKE @p1 ORDER BY `CreatedAt` DESC LIMIT 10
+```
+
 
 ### Multiple Database Connections
 
@@ -263,6 +328,37 @@ var result = await connectionManager.ExecuteWithConnectionAsync(async connection
 }, "Default");
 ```
 
+## LINQ vs Magic Strings: Before & After
+
+### Before (Magic Strings - ❌ Not Type-Safe)
+
+```csharp
+// ❌ Typo won't be caught until runtime!
+var users = await queryBuilder
+    .Where("IsActiv", "=", true)        // Typo in column name
+    .Where("Age", ">", "eighteen")       // Type mismatch
+    .OrderByDesc("CretedAt")              // Another typo!
+    .ExecuteAsync();
+```
+
+### After (LINQ - ✅ Type-Safe!)
+
+```csharp
+// ✅ Compiler catches errors immediately!
+var users = await queryBuilder
+    .Where(u => u.IsActive == true)     // ✓ IntelliSense & compiler check
+    .Where(u => u.Age > 18)             // ✓ Type-safe comparison
+    .OrderByDescending(u => u.CreatedAt) // ✓ Property rename updates query
+    .ExecuteAsync();
+```
+
+**Benefits of LINQ:**
+- ✅ Compile-time error detection
+- ✅ Full IntelliSense support in your IDE
+- ✅ Safe refactoring (rename properties and queries update automatically)
+- ✅ No magic strings
+- ✅ Type-safe comparisons
+
 ## Supported Data Types
 
 - Numeric: `TinyInt`, `SmallInt`, `MediumInt`, `Int`, `BigInt`, `Float`, `Double`, `Decimal`
@@ -300,11 +396,12 @@ else
 
 ### Key Components
 
-1. **ConnectionManager**: Manages database connections with pooling and caching
-2. **Repository<T>**: Generic repository for CRUD operations
-3. **QueryBuilder<T>**: Fluent API for building complex SQL queries
-4. **TypeConverter**: Handles conversion between C# and MySQL types
-5. **DatabaseConfiguration**: Configuration model for database connections
+1. **ExpressionVisitor**: Converts LINQ expression trees to SQL WHERE conditions ⭐
+2. **ConnectionManager**: Manages database connections with pooling and caching
+3. **Repository<T>**: Generic repository for CRUD operations
+4. **QueryBuilder<T>**: Type-safe fluent API using LINQ expressions
+5. **TypeConverter**: Handles conversion between C# and MySQL types
+6. **DatabaseConfiguration**: Configuration model for database connections
 
 ### Integration Points
 
@@ -321,6 +418,7 @@ else
 ## Version History
 
 ### 2.0.0 (Current)
+- **Type-Safe LINQ Only** ⭐ - Full LINQ expression support, magic strings removed
 - Complete rewrite for CodeLogic 2.0 framework
 - Full integration with new logging, configuration, and DI systems
 - Enhanced connection management with health checks

@@ -181,6 +181,17 @@ public class SQLiteLibrary : ILibrary
 
         return new Repository<T>(_connectionManager, _logger);
     }
+
+    /// <summary>
+    /// Creates a type-safe LINQ query builder for the specified model type
+    /// </summary>
+    public QueryBuilder<T> CreateQueryBuilder<T>() where T : class, new()
+    {
+        if (_connectionManager == null || _logger == null)
+            throw new InvalidOperationException("Library not initialized");
+
+        return new QueryBuilder<T>(_connectionManager, _logger);
+    }
 }
 
 /// <summary>

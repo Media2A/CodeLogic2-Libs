@@ -1,15 +1,21 @@
-# CL.PostgreSQL - CodeLogic PostgreSQL Library
+# CL.PostgreSQL - Type-Safe LINQ PostgreSQL Library
 
-A fully integrated PostgreSQL database library for the CodeLogic framework, providing high-performance database operations with comprehensive logging, configuration, and connection management.
+A fully integrated PostgreSQL database library for the CodeLogic framework with **LINQ support** for compile-time type-safe queries, high-performance database operations, comprehensive logging, and connection management.
 
-## Features
+## ✨ Key Features
+
+### 🔐 **Type-Safe LINQ Queries** ⭐
+- **Expression Tree Support**: Compile-time checked queries with full IntelliSense
+- **No Magic Strings**: Property names checked by compiler at build time
+- **Refactoring Safe**: Rename properties and the compiler updates queries
+- **Strong Typing**: Type mismatches caught before runtime
 
 ### 🔌 Connection Management
 - **Connection Pooling**: Configurable min/max pool sizes for optimal performance
 - **Multi-Database Support**: Register and manage multiple database connections simultaneously
-- **Automatic Retry**: Built-in retry logic for connection failures
-- **Connection Caching**: Efficient caching of connection strings for repeated operations
+- **Connection Caching**: Efficient caching of connection strings
 - **Health Checks**: Built-in connection testing and health monitoring
+- **Transaction Support**: Full ACID compliance with automatic rollback
 
 ### 📦 CRUD Operations with Repository Pattern
 - **Generic Repository<T>**: Type-safe CRUD operations for any model
@@ -18,13 +24,15 @@ A fully integrated PostgreSQL database library for the CodeLogic framework, prov
 - **Query Result Caching**: Configurable in-memory caching with TTL
 - **Pagination Support**: Built-in paging with page numbers and sizes
 
-### 🔨 Fluent Query Builder
-- **Chainable API**: Intuitive fluent interface for building complex queries
-- **Flexible WHERE Clauses**: Support for =, !=, <, >, <=, >=, IN, LIKE, BETWEEN
-- **JOIN Support**: INNER, LEFT, RIGHT, and FULL OUTER joins
-- **Aggregates**: COUNT, SUM, AVG, MIN, MAX with grouping
-- **Sorting & Pagination**: ORDER BY with ASC/DESC, LIMIT, OFFSET
-- **SQL Generation**: ToSql() method for query debugging
+### 🚀 Type-Safe LINQ Query Builder
+- **Lambda Expressions**: `Where(u => u.IsActive && u.Age > 18)`
+- **Full LINQ Support**: Select, Where, OrderBy, GroupBy, Join, Aggregates
+- **String Operations**: Contains, StartsWith, EndsWith with automatic LIKE translation
+- **Comparison Operators**: =, !=, <, >, <=, >=, IN, BETWEEN
+- **Logical Operators**: AND, OR with proper precedence
+- **Aggregates**: COUNT, SUM, AVG, MIN, MAX with automatic SQL generation
+- **Sorting & Pagination**: OrderBy, OrderByDescending, Take, Skip
+- **SQL Debugging**: ToSql() method for query inspection
 
 ### 🔄 Automatic Schema Synchronization
 - **Model-to-Database Sync**: Automatically create and update tables from C# models
@@ -32,7 +40,6 @@ A fully integrated PostgreSQL database library for the CodeLogic framework, prov
 - **Index Management**: Create and manage indexes including composite indexes
 - **Backup Management**: Automatic backups before schema changes
 - **Migration Tracking**: Complete migration history logging
-- **Namespace Sync**: Synchronize all tables in a namespace at once
 
 ### 💾 Advanced Features
 - **JSONB Support**: Native JSONB column support for complex data
@@ -41,19 +48,6 @@ A fully integrated PostgreSQL database library for the CodeLogic framework, prov
 - **Type Conversion**: Automatic C# <-> PostgreSQL type conversion
 - **Timestamp Management**: Automatic CURRENT_TIMESTAMP and update tracking
 - **Foreign Keys**: Built-in foreign key constraint support
-- **Unique Constraints**: Column uniqueness enforcement
-
-### 📊 Data Types
-
-Comprehensive PostgreSQL data type support:
-- **Integers**: SmallInt, Int, BigInt
-- **Decimals**: Real, DoublePrecision, Numeric
-- **Dates/Times**: Timestamp, TimestampTz, Date, Time, TimeTz
-- **Text**: Char, VarChar, Text
-- **Binary**: Bytea
-- **JSON**: Json, Jsonb
-- **Special**: Uuid, Bool
-- **Arrays**: IntArray, BigIntArray, TextArray, NumericArray
 
 ### 🔐 Security & Performance
 - **Parameterized Queries**: All SQL queries use parameters to prevent injection
@@ -97,17 +91,6 @@ Create a `config/postgresql.json` file in your application root:
     "enable_auto_sync": true,
     "log_slow_queries": true,
     "slow_query_threshold": 1000
-  },
-  "Demo": {
-    "enabled": true,
-    "host": "localhost",
-    "port": 5432,
-    "database": "demo_database",
-    "username": "postgres",
-    "password": "",
-    "min_pool_size": 5,
-    "max_pool_size": 100,
-    "ssl_mode": "Disable"
   }
 }
 ```
@@ -119,13 +102,13 @@ Create a `config/postgresql.json` file in your application root:
 ```csharp
 using CL.PostgreSQL.Models;
 
-[Table(Schema = "public", Comment = "Users table")]
+[Table(Schema = "public")]
 public class User
 {
     [Column(DataType = DataType.BigInt, Primary = true, AutoIncrement = true)]
     public long Id { get; set; }
 
-    [Column(DataType = DataType.VarChar, Size = 255, NotNull = true, Index = true)]
+    [Column(DataType = DataType.VarChar, Size = 255, NotNull = true)]
     public string? Username { get; set; }
 
     [Column(DataType = DataType.VarChar, Size = 255, NotNull = true, Unique = true)]
@@ -139,7 +122,7 @@ public class User
 }
 ```
 
-### 2. Use the Repository Pattern
+### 2. Use the Repository Pattern for CRUD
 
 ```csharp
 // Get the library
@@ -148,86 +131,141 @@ var library = context.GetLibrary<PostgreSQL2Library>("cl.postgresql");
 // Create a repository
 var userRepo = library.GetRepository<User>();
 
-// Insert
+// CREATE - Insert
 var user = new User { Username = "john_doe", Email = "john@example.com" };
 var result = await userRepo.InsertAsync(user);
 
-// Get by ID
+// READ - Get by ID
 var fetchedUser = await userRepo.GetByIdAsync(1);
 
-// Get all with caching (300 second TTL)
-var allUsers = await userRepo.GetAllAsync(cacheTtl: 300);
+// READ - Get all
+var allUsers = await userRepo.GetAllAsync();
 
-// Paginated results
+// READ - Paginated
 var pagedUsers = await userRepo.GetPagedAsync(page: 1, pageSize: 10);
 
-// Update
+// UPDATE
 user.IsActive = false;
 await userRepo.UpdateAsync(user);
 
-// Delete
+// DELETE
 await userRepo.DeleteAsync(user.Id);
 
-// Count
+// COUNT
 var totalUsers = await userRepo.CountAsync();
 ```
 
-### 3. Use the Query Builder
+### 3. Use Type-Safe LINQ Queries ⭐
 
 ```csharp
 var queryBuilder = library.GetQueryBuilder<User>();
 
-// Simple query
+// ✅ Simple LINQ query (type-safe!)
 var activeUsers = await queryBuilder
-    .WhereEquals("IsActive", true)
-    .OrderByDesc("CreatedAt")
+    .Where(u => u.IsActive == true)
+    .OrderByDescending(u => u.CreatedAt)
     .ExecuteAsync();
 
-// Complex query with multiple conditions
+// ✅ Multiple conditions with AND
 var results = await queryBuilder
-    .Select("Id", "Username", "Email")
-    .Where("IsActive", "=", true)
-    .WhereGreaterThan("CreatedAt", new DateTime(2024, 1, 1))
-    .OrderBy("Username", SortOrder.Asc)
-    .Limit(10)
+    .Where(u => u.IsActive && u.CreatedAt > startDate)
+    .OrderBy(u => u.Username)
+    .Take(10)
     .ExecuteAsync();
 
-// Paged results
-var paged = await queryBuilder
-    .WhereEquals("IsActive", true)
-    .ExecutePagedAsync(page: 1, pageSize: 20);
+// ✅ String operations
+var emailUsers = await queryBuilder
+    .Where(u => u.Email.Contains("@company.com"))
+    .ExecuteAsync();
 
-// Count results
+// ✅ Collection filtering
+var userIds = new[] { 1, 2, 3 };
+var filtered = await queryBuilder
+    .Where(u => userIds.Contains((int)u.Id))
+    .ExecuteAsync();
+
+// ✅ Paged results
+var paged = await queryBuilder
+    .Where(u => u.IsActive)
+    .ToPagedAsync(page: 1, pageSize: 20);
+
+// ✅ Count with filtering
 var count = await queryBuilder
-    .WhereEquals("IsActive", true)
+    .Where(u => u.IsActive)
     .CountAsync();
 
-// Get single result
+// ✅ Get first
 var firstUser = await queryBuilder
-    .WhereEquals("Username", "john_doe")
+    .Where(u => u.Username == "john_doe")
     .FirstOrDefaultAsync();
-
-// Generate SQL for debugging
-var sql = queryBuilder
-    .Select("*")
-    .WhereEquals("IsActive", true)
-    .ToSql();
 ```
 
-### 4. Synchronize Tables
+## LINQ Patterns
+
+### Comparisons
+```csharp
+.Where(u => u.Age > 18)           // Greater than
+.Where(u => u.Age >= 18)          // Greater or equal
+.Where(u => u.Age < 65)           // Less than
+.Where(u => u.CreatedAt >= date)  // Date comparison
+```
+
+### Logical Operators
+```csharp
+.Where(u => u.IsActive && u.Age > 18)                  // AND
+.Where(u => u.Role == "Admin" || u.Role == "Moderator")  // OR
+.Where(u => u.IsActive && (u.Age > 18 || u.VIP))       // Complex
+```
+
+### String Methods
+```csharp
+.Where(u => u.Email.Contains("@gmail.com"))    // Contains (LIKE)
+.Where(u => u.Username.StartsWith("admin_"))   // Starts with
+.Where(u => u.Domain.EndsWith(".com"))         // Ends with
+```
+
+### Collections
+```csharp
+.Where(u => new[] { 1, 2, 3 }.Contains((int)u.Id))  // IN clause
+.Where(u => myList.Contains(u.Status))               // From variable
+```
+
+### Ordering
+```csharp
+.OrderBy(u => u.CreatedAt)              // Ascending
+.OrderByDescending(u => u.Score)        // Descending
+.ThenBy(u => u.Email)                   // Then by
+.ThenByDescending(u => u.Id)            // Then by descending
+```
+
+### Aggregates
+```csharp
+.Count()                             // COUNT(*)
+.Sum(u => u.TotalSpent)             // SUM
+.Avg(u => u.Rating)                 // AVG
+.Min(u => u.Age)                    // MIN
+.Max(u => u.Score)                  // MAX
+```
+
+### Pagination
+```csharp
+.Take(10)                    // LIMIT
+.Skip(20)                    // OFFSET
+.ToPagedAsync(1, 20)        // Get page with metadata
+```
+
+## Synchronize Tables
 
 ```csharp
-var library = context.GetLibrary<PostgreSQL2Library>("cl.postgresql");
-
 // Sync single table
 await library.SyncTableAsync<User>(createBackup: true);
 
 // Sync multiple tables
-var types = new[] { typeof(User), typeof(Post), typeof(Comment) };
+var types = new[] { typeof(User), typeof(Post) };
 var results = await library.SyncTablesAsync(types, createBackup: true);
 
 // Sync entire namespace
-var syncResults = await library.SyncNamespaceAsync(
+await library.SyncNamespaceAsync(
     "MyApp.Models",
     createBackup: true,
     includeDerivedNamespaces: true
@@ -237,114 +275,69 @@ var syncResults = await library.SyncNamespaceAsync(
 ## Model Attributes
 
 ### [TableAttribute]
-Defines table properties at the class level:
 ```csharp
 [Table(
-    Name = "custom_table_name",      // Optional, defaults to class name
-    Schema = "public",                // Optional, defaults to "public"
-    Comment = "Table description"     // Optional
+    Name = "custom_table_name",   // Optional
+    Schema = "public",             // Optional, defaults to "public"
+    Comment = "Table description"  // Optional
 )]
 public class MyModel { }
 ```
 
 ### [ColumnAttribute]
-Defines column properties on properties:
 ```csharp
 [Column(
-    DataType = DataType.VarChar,      // Required
-    Name = "custom_column",           // Optional, defaults to property name
-    Size = 255,                       // For VARCHAR/CHAR
-    Precision = 10,                   // For NUMERIC
-    Scale = 2,                        // For NUMERIC
-    Primary = false,                  // Primary key flag
-    AutoIncrement = false,            // Auto-increment flag
-    NotNull = false,                  // NOT NULL constraint
-    Unique = false,                   // UNIQUE constraint
-    Index = false,                    // Create index
-    DefaultValue = null,              // Default value like "CURRENT_TIMESTAMP"
-    Comment = "Column description",   // Column comment
-    OnUpdateCurrentTimestamp = false  // Auto-update on modification
+    DataType = DataType.VarChar,   // Required
+    Name = "custom_column",        // Optional
+    Size = 255,                    // For VARCHAR/CHAR
+    Primary = false,               // Primary key
+    AutoIncrement = false,         // Auto-increment
+    NotNull = false,               // NOT NULL
+    Unique = false,                // UNIQUE
+    Index = false,                 // Create index
+    DefaultValue = null,           // Default value
+    OnUpdateCurrentTimestamp = false  // Auto-update
 )]
 public string? MyColumn { get; set; }
 ```
 
 ### [ForeignKeyAttribute]
-Defines foreign key constraints:
 ```csharp
 [ForeignKey(
     ReferenceTable = "users",
     ReferenceColumn = "id",
-    OnDelete = ForeignKeyAction.Cascade,
-    OnUpdate = ForeignKeyAction.Cascade
+    OnDelete = ForeignKeyAction.Cascade
 )]
 public long UserId { get; set; }
 ```
 
+### [IgnoreAttribute]
+```csharp
+[Ignore]  // Skip in database operations
+public string ComputedValue { get; set; }
+```
+
 ### [CompositeIndexAttribute]
-Creates multi-column indexes:
 ```csharp
 [CompositeIndex("idx_user_email", "UserId", "Email", Unique = true)]
 public class UserEmail { }
 ```
 
-### [IgnoreAttribute]
-Skip a property in database operations:
-```csharp
-[Ignore]
-public string ComputedValue { get; set; }
-```
+## Data Types
 
-## Architecture
+Comprehensive PostgreSQL data type support:
 
-### ConnectionManager
-Manages database connections with pooling and caching:
-- Registers and retrieves configurations
-- Handles connection lifecycle
-- Tests connections
-- Executes with automatic connection management
-- Transaction support
-
-### Repository<T>
-Generic CRUD operations:
-- InsertAsync, GetByIdAsync, GetByColumnAsync
-- GetAllAsync, GetPagedAsync
-- UpdateAsync, DeleteAsync
-- CountAsync
-- Built-in caching support
-
-### QueryBuilder<T>
-Fluent SQL query construction:
-- SELECT, WHERE, ORDER BY, GROUP BY
-- JOINs (INNER, LEFT, RIGHT, FULL OUTER)
-- Aggregates (COUNT, SUM, AVG, MIN, MAX)
-- LIMIT, OFFSET
-- ExecuteAsync, ExecutePagedAsync, CountAsync, FirstOrDefaultAsync
-
-### TableSyncService
-Schema synchronization:
-- SchemaAnalyzer: Generates DDL from models
-- BackupManager: Creates backups before changes
-- MigrationTracker: Tracks migration history
-
-### TypeConverter
-Automatic type conversion between C# and PostgreSQL:
-- DateTime conversions
-- UUID/GUID handling
-- JSON serialization
-- Array conversions
-- Enum handling
-- Decimal precision
-
-## Connection String Format
-
-PostgreSQL connection strings follow this format:
-```
-Host=localhost;Port=5432;Database=mydb;Username=postgres;Password=password;SSL Mode=Prefer;Pooling=true;
-```
+- **Integers**: SmallInt, Int, BigInt
+- **Decimals**: Real, DoublePrecision, Numeric
+- **Dates/Times**: Timestamp, TimestampTz, Date, Time, TimeTz
+- **Text**: Char, VarChar, Text
+- **JSON**: Json, Jsonb
+- **Special**: Uuid, Bool, Bytea
+- **Arrays**: IntArray, BigIntArray, TextArray, NumericArray
 
 ## Best Practices
 
-1. **Always use repositories or query builders** instead of raw SQL for type safety
+1. **Always use LINQ expressions** instead of magic strings - compiler catches errors
 2. **Cache frequently accessed data** by setting cacheTtl parameter
 3. **Use pagination** for large result sets
 4. **Index columns** that are frequently used in WHERE clauses
@@ -362,12 +355,12 @@ Host=localhost;Port=5432;Database=mydb;Username=postgres;Password=password;SSL M
 - **Indexes**: Create indexes on frequently queried columns
 - **Pagination**: Use pagination for large result sets
 - **Async/Await**: Always use async methods for non-blocking I/O
-- **Batch Operations**: Process multiple records efficiently
+- **LINQ Efficiency**: Complex LINQ expressions translate to optimal SQL
 
 ## Troubleshooting
 
 ### Connection Issues
-Check the connection string and ensure PostgreSQL is running:
+Verify connection string and ensure PostgreSQL is running:
 ```json
 {
   "host": "localhost",
@@ -377,18 +370,22 @@ Check the connection string and ensure PostgreSQL is running:
 }
 ```
 
-### Schema Sync Issues
-Enable logging to see detailed sync operations:
-```json
-{
-  "enable_logging": true
-}
+### Type Safety Errors
+Ensure column names in LINQ match property names:
+```csharp
+// ✓ Correct - property name matches column
+public string Username { get; set; }
+.Where(u => u.Username == "john")
+
+// ✗ Wrong - property/column mismatch
+.Where(u => u.UserNam == "john")  // Compile error!
 ```
 
 ### Performance Issues
-Check slow query logs:
+Enable logging to see slow queries:
 ```json
 {
+  "enable_logging": true,
   "log_slow_queries": true,
   "slow_query_threshold": 1000
 }
@@ -402,15 +399,20 @@ Check slow query logs:
 
 - **Npgsql**: PostgreSQL data provider for .NET
 - **CodeLogic**: Framework integration
+- **.NET 10.0**: Target framework
+
+## Version
+
+**Current Version**: 2.0.0 with LINQ Support
 
 ## License
 
 This library is part of the CodeLogic framework and follows the same licensing.
 
-## Version
-
-**Current Version**: 2.0.0
-
 ## Support
 
 For issues, questions, or feature requests, please refer to the CodeLogic documentation or create an issue in the repository.
+
+---
+
+**Happy querying with type-safe LINQ!** 🚀
