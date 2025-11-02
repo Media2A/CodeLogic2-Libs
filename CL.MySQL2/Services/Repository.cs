@@ -4,6 +4,7 @@ using CL.MySQL2.Models;
 using Microsoft.Extensions.Caching.Memory;
 using MySqlConnector;
 using System.Collections.Concurrent;
+using System.Linq.Expressions;
 using System.Reflection;
 
 namespace CL.MySQL2.Services;
@@ -312,6 +313,111 @@ public class Repository<T> where T : class, new()
         {
             _logger?.Error($"Failed to delete record from {_tableName}", ex);
             return OperationResult<int>.Fail($"Failed to delete record: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Increments a numeric column by the specified amount.
+    /// Example: repository.IncrementAsync(postId, p => p.ViewCount, 1)
+    /// </summary>
+    public async Task<OperationResult<int>> IncrementAsync<TProperty>(object id, Expression<Func<T, TProperty>> columnSelector, int amount = 1, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                var primaryKey = GetPrimaryKeyProperty();
+                if (primaryKey == null)
+                    return OperationResult<int>.Fail("No primary key defined on the model");
+
+                var pkColumnName = primaryKey.GetCustomAttribute<ColumnAttribute>()?.Name ?? primaryKey.Name;
+
+                // Get the column name from the expression
+                var memberExpr = columnSelector.Body as MemberExpression;
+                if (memberExpr == null)
+                    return OperationResult<int>.Fail("Invalid column selector expression");
+
+                var property = memberExpr.Member as PropertyInfo;
+                if (property == null)
+                    return OperationResult<int>.Fail("Invalid column selector expression");
+
+                var columnName = property.GetCustomAttribute<ColumnAttribute>()?.Name ?? property.Name;
+
+                var sql = $"UPDATE `{_tableName}` SET `{columnName}` = `{columnName}` + @amount WHERE `{pkColumnName}` = @id";
+
+                using var cmd = new MySqlCommand(sql, connection);
+                cmd.Parameters.AddWithValue("@amount", amount);
+                cmd.Parameters.AddWithValue("@id", id ?? DBNull.Value);
+
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+
+                if (_config.EnableLogging)
+                    _logger?.Debug($"Incremented {columnName} by {amount} in {_tableName}");
+
+                return OperationResult<int>.Ok(rowsAffected);
+            }, _connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to increment column in {_tableName}", ex);
+            return OperationResult<int>.Fail($"Failed to increment column: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Decrements a numeric column by the specified amount.
+    /// Example: repository.DecrementAsync(postId, p => p.CommentCount, 1)
+    /// Optionally uses GREATEST to ensure the value doesn't go below zero.
+    /// </summary>
+    public async Task<OperationResult<int>> DecrementAsync<TProperty>(object id, Expression<Func<T, TProperty>> columnSelector, int amount = 1, bool preventNegative = true, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                var primaryKey = GetPrimaryKeyProperty();
+                if (primaryKey == null)
+                    return OperationResult<int>.Fail("No primary key defined on the model");
+
+                var pkColumnName = primaryKey.GetCustomAttribute<ColumnAttribute>()?.Name ?? primaryKey.Name;
+
+                // Get the column name from the expression
+                var memberExpr = columnSelector.Body as MemberExpression;
+                if (memberExpr == null)
+                    return OperationResult<int>.Fail("Invalid column selector expression");
+
+                var property = memberExpr.Member as PropertyInfo;
+                if (property == null)
+                    return OperationResult<int>.Fail("Invalid column selector expression");
+
+                var columnName = property.GetCustomAttribute<ColumnAttribute>()?.Name ?? property.Name;
+
+                string sql;
+                if (preventNegative)
+                {
+                    sql = $"UPDATE `{_tableName}` SET `{columnName}` = GREATEST(`{columnName}` - @amount, 0) WHERE `{pkColumnName}` = @id";
+                }
+                else
+                {
+                    sql = $"UPDATE `{_tableName}` SET `{columnName}` = `{columnName}` - @amount WHERE `{pkColumnName}` = @id";
+                }
+
+                using var cmd = new MySqlCommand(sql, connection);
+                cmd.Parameters.AddWithValue("@amount", amount);
+                cmd.Parameters.AddWithValue("@id", id ?? DBNull.Value);
+
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+
+                if (_config.EnableLogging)
+                    _logger?.Debug($"Decremented {columnName} by {amount} in {_tableName}");
+
+                return OperationResult<int>.Ok(rowsAffected);
+            }, _connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to decrement column in {_tableName}", ex);
+            return OperationResult<int>.Fail($"Failed to decrement column: {ex.Message}", ex);
         }
     }
 

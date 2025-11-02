@@ -636,6 +636,209 @@ public class MySQL2Library : ILibrary
             }
         }
     }
+
+    /// <summary>
+    /// Execute a raw SQL query and return a list of typed results.
+    /// Useful for complex queries with JOINs, custom WHERE clauses, etc.
+    /// </summary>
+    /// <typeparam name="T">The type to map results to</typeparam>
+    /// <param name="connectionId">Database connection ID</param>
+    /// <param name="sql">SQL query string</param>
+    /// <param name="parameters">Anonymous object with parameter values</param>
+    /// <returns>Operation result containing list of mapped entities</returns>
+    public async Task<OperationResult<List<T>>> QueryAsync<T>(
+        string connectionId,
+        string sql,
+        object? parameters = null,
+        CancellationToken cancellationToken = default) where T : class, new()
+    {
+        if (_connectionManager == null)
+        {
+            return OperationResult<List<T>>.Fail("Connection manager not initialized");
+        }
+
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                using var cmd = new MySqlConnector.MySqlCommand(sql, connection);
+
+                // Add parameters if provided
+                if (parameters != null)
+                {
+                    var props = parameters.GetType().GetProperties();
+                    foreach (var prop in props)
+                    {
+                        var value = prop.GetValue(parameters);
+                        cmd.Parameters.AddWithValue($"@{prop.Name}", value ?? DBNull.Value);
+                    }
+                }
+
+                using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
+                var results = new List<T>();
+
+                // Get property info for mapping
+                var entityProps = typeof(T).GetProperties();
+
+                while (await reader.ReadAsync(cancellationToken))
+                {
+                    var entity = new T();
+
+                    for (int i = 0; i < reader.FieldCount; i++)
+                    {
+                        var columnName = reader.GetName(i);
+                        var value = reader.GetValue(i);
+
+                        // Find matching property (case-insensitive, with snake_case to PascalCase conversion)
+                        var prop = entityProps.FirstOrDefault(p =>
+                            p.Name.Equals(columnName, StringComparison.OrdinalIgnoreCase) ||
+                            p.Name.Equals(ToPascalCase(columnName), StringComparison.OrdinalIgnoreCase));
+
+                        if (prop != null && value != DBNull.Value)
+                        {
+                            try
+                            {
+                                // Handle nullable types
+                                var targetType = Nullable.GetUnderlyingType(prop.PropertyType) ?? prop.PropertyType;
+                                var convertedValue = Convert.ChangeType(value, targetType);
+                                prop.SetValue(entity, convertedValue);
+                            }
+                            catch
+                            {
+                                // Skip property if conversion fails
+                            }
+                        }
+                    }
+
+                    results.Add(entity);
+                }
+
+                return OperationResult<List<T>>.Ok(results);
+            }, connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Query failed: {ex.Message}", ex);
+            return OperationResult<List<T>>.Fail($"Query failed: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Execute a raw SQL command (INSERT, UPDATE, DELETE) and return rows affected.
+    /// </summary>
+    /// <param name="connectionId">Database connection ID</param>
+    /// <param name="sql">SQL command string</param>
+    /// <param name="parameters">Anonymous object with parameter values</param>
+    /// <returns>Operation result containing number of rows affected</returns>
+    public async Task<OperationResult<int>> ExecuteAsync(
+        string connectionId,
+        string sql,
+        object? parameters = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_connectionManager == null)
+        {
+            return OperationResult<int>.Fail("Connection manager not initialized");
+        }
+
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                using var cmd = new MySqlConnector.MySqlCommand(sql, connection);
+
+                // Add parameters if provided
+                if (parameters != null)
+                {
+                    var props = parameters.GetType().GetProperties();
+                    foreach (var prop in props)
+                    {
+                        var value = prop.GetValue(parameters);
+                        cmd.Parameters.AddWithValue($"@{prop.Name}", value ?? DBNull.Value);
+                    }
+                }
+
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+                return OperationResult<int>.Ok(rowsAffected, rowsAffected);
+            }, connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Execute failed: {ex.Message}", ex);
+            return OperationResult<int>.Fail($"Execute failed: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Execute a scalar query and return a single value (useful for COUNT, SUM, MAX, etc).
+    /// </summary>
+    /// <typeparam name="TResult">The type of result to return</typeparam>
+    /// <param name="connectionId">Database connection ID</param>
+    /// <param name="sql">SQL query string</param>
+    /// <param name="parameters">Anonymous object with parameter values</param>
+    /// <returns>Operation result containing the scalar value</returns>
+    public async Task<OperationResult<TResult>> ExecuteScalarAsync<TResult>(
+        string connectionId,
+        string sql,
+        object? parameters = null,
+        CancellationToken cancellationToken = default)
+    {
+        if (_connectionManager == null)
+        {
+            return OperationResult<TResult>.Fail("Connection manager not initialized");
+        }
+
+        try
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                using var cmd = new MySqlConnector.MySqlCommand(sql, connection);
+
+                // Add parameters if provided
+                if (parameters != null)
+                {
+                    var props = parameters.GetType().GetProperties();
+                    foreach (var prop in props)
+                    {
+                        var value = prop.GetValue(parameters);
+                        cmd.Parameters.AddWithValue($"@{prop.Name}", value ?? DBNull.Value);
+                    }
+                }
+
+                var result = await cmd.ExecuteScalarAsync(cancellationToken);
+
+                if (result == null || result == DBNull.Value)
+                {
+                    return OperationResult<TResult>.Ok(default(TResult)!);
+                }
+
+                var targetType = Nullable.GetUnderlyingType(typeof(TResult)) ?? typeof(TResult);
+                var convertedValue = (TResult)Convert.ChangeType(result, targetType);
+
+                return OperationResult<TResult>.Ok(convertedValue);
+            }, connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Scalar query failed: {ex.Message}", ex);
+            return OperationResult<TResult>.Fail($"Scalar query failed: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Convert snake_case to PascalCase for property mapping.
+    /// </summary>
+    private string ToPascalCase(string snakeCase)
+    {
+        if (string.IsNullOrEmpty(snakeCase))
+            return snakeCase;
+
+        var parts = snakeCase.Split('_');
+        var result = string.Join("", parts.Select(part =>
+            char.ToUpperInvariant(part[0]) + part.Substring(1).ToLowerInvariant()));
+
+        return result;
+    }
 }
 
 /// <summary>

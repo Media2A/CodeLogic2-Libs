@@ -104,6 +104,66 @@ public class QueryBuilder<T> where T : class, new()
     }
 
     /// <summary>
+    /// Adds an INNER JOIN clause.
+    /// Example: .InnerJoin("blog_categories", "blog_posts.category_id = blog_categories.id")
+    /// </summary>
+    public QueryBuilder<T> InnerJoin(string table, string condition)
+    {
+        _joinClauses.Add(new JoinClause
+        {
+            Type = JoinType.Inner,
+            Table = table,
+            Condition = condition
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a LEFT JOIN clause.
+    /// Example: .LeftJoin("blog_categories", "blog_posts.category_id = blog_categories.id")
+    /// </summary>
+    public QueryBuilder<T> LeftJoin(string table, string condition)
+    {
+        _joinClauses.Add(new JoinClause
+        {
+            Type = JoinType.Left,
+            Table = table,
+            Condition = condition
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a RIGHT JOIN clause.
+    /// Example: .RightJoin("blog_categories", "blog_posts.category_id = blog_categories.id")
+    /// </summary>
+    public QueryBuilder<T> RightJoin(string table, string condition)
+    {
+        _joinClauses.Add(new JoinClause
+        {
+            Type = JoinType.Right,
+            Table = table,
+            Condition = condition
+        });
+        return this;
+    }
+
+    /// <summary>
+    /// Adds a CROSS JOIN clause.
+    /// Example: .CrossJoin("blog_tags")
+    /// </summary>
+    public QueryBuilder<T> CrossJoin(string table)
+    {
+        _joinClauses.Add(new JoinClause
+        {
+            Type = JoinType.Cross,
+            Table = table,
+            Condition = "" // CROSS JOIN doesn't need a condition
+        });
+        return this;
+    }
+
+    /// <summary>
     /// Adds a LINQ-based SELECT clause (column projection).
     /// Example: .Select(u => new { u.Id, u.Email })
     /// </summary>
@@ -352,6 +412,32 @@ public class QueryBuilder<T> where T : class, new()
     }
 
     /// <summary>
+    /// Executes a DELETE query with WHERE conditions and returns the number of rows affected.
+    /// Example: queryBuilder.Where(c => c.PostId == 123).DeleteAsync()
+    /// </summary>
+    public async Task<OperationResult<int>> DeleteAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var deleteQuery = BuildDeleteQuery();
+
+            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            {
+                using var cmd = new MySqlCommand(deleteQuery, connection);
+                AddParametersToCommand(cmd);
+
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+                return OperationResult<int>.Ok(rowsAffected);
+            }, _connectionId, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Delete query failed: {ex.Message}", ex);
+            return OperationResult<int>.Fail($"Delete query failed: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
     /// Returns the SQL query that would be executed (for debugging).
     /// </summary>
     public string ToSql()
@@ -485,6 +571,48 @@ public class QueryBuilder<T> where T : class, new()
         }
 
         // WHERE clause
+        if (_whereConditions.Any())
+        {
+            sb.Append(" WHERE ");
+            for (int i = 0; i < _whereConditions.Count; i++)
+            {
+                var condition = _whereConditions[i];
+                if (i > 0)
+                    sb.Append($" {condition.LogicalOperator} ");
+
+                if (condition.Operator.Equals("IN", StringComparison.OrdinalIgnoreCase) &&
+                    condition.Value is Array arr)
+                {
+                    var paramNames = new List<string>();
+                    for (int j = 0; j < arr.Length; j++)
+                    {
+                        paramNames.Add($"@p{i}_{j}");
+                    }
+                    sb.Append($"`{condition.Column}` IN ({string.Join(", ", paramNames)})");
+                }
+                else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase) &&
+                         condition.Value is Array betweenArr && betweenArr.Length == 2)
+                {
+                    sb.Append($"`{condition.Column}` BETWEEN @p{i}_0 AND @p{i}_1");
+                }
+                else
+                {
+                    sb.Append($"`{condition.Column}` {condition.Operator} @p{i}");
+                }
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private string BuildDeleteQuery()
+    {
+        var sb = new StringBuilder();
+        sb.Append("DELETE FROM `");
+        sb.Append(_tableName);
+        sb.Append("`");
+
+        // WHERE clause (same logic as BuildCountQuery)
         if (_whereConditions.Any())
         {
             sb.Append(" WHERE ");
