@@ -13,6 +13,11 @@ public class BackupManager
     private readonly ILogger? _logger;
     private const string BackupFolderName = "backups";
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="BackupManager"/> class.
+    /// </summary>
+    /// <param name="dataDirectory">The base data directory for the library.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
     public BackupManager(string dataDirectory, ILogger? logger = null)
     {
         _logger = logger;

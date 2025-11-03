@@ -232,3 +232,24 @@ public class CompositeIndexAttribute : Attribute
         ColumnNames = columnNames;
     }
 }
+
+/// <summary>
+/// Attribute for defining a many-to-many relationship on a navigation property.
+/// </summary>
+[AttributeUsage(AttributeTargets.Property, AllowMultiple = false)]
+public class ManyToManyAttribute : Attribute
+{
+    /// <summary>
+    /// Gets the entity type of the junction table that links the two entities.
+    /// </summary>
+    public Type JunctionEntityType { get; }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ManyToManyAttribute"/> class.
+    /// </summary>
+    /// <param name="junctionEntityType">The model type representing the junction table.</param>
+    public ManyToManyAttribute(Type junctionEntityType)
+    {
+        JunctionEntityType = junctionEntityType;
+    }
+}

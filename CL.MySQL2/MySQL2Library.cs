@@ -19,8 +19,10 @@ public class MySQL2Library : ILibrary
     private TableSyncService? _tableSyncService;
     private readonly Dictionary<string, DatabaseConfiguration> _databaseConfigs = new();
 
+    /// <inheritdoc />
     public ILibraryManifest Manifest { get; } = new MySQL2Manifest();
 
+    /// <inheritdoc />
     public async Task OnLoadAsync(LibraryContext context)
     {
         _context = context;
@@ -40,6 +42,7 @@ public class MySQL2Library : ILibrary
         await Task.CompletedTask;
     }
 
+    /// <inheritdoc />
     public async Task OnInitializeAsync()
     {
         Console.WriteLine($"    [CL.MySQL2] Initializing MySQL2 library...");
@@ -66,6 +69,9 @@ public class MySQL2Library : ILibrary
             }
 
             Console.WriteLine($"    [CL.MySQL2] ✓ Initialized successfully with {_databaseConfigs.Count} database(s)");
+
+            // Run startup synchronization if configured
+            await RunSyncOnStartupAsync();
         }
         catch (Exception ex)
         {
@@ -74,6 +80,7 @@ public class MySQL2Library : ILibrary
         }
     }
 
+    /// <inheritdoc />
     public async Task OnUnloadAsync()
     {
         Console.WriteLine($"    [CL.MySQL2] Shutting down MySQL2 library...");
@@ -86,6 +93,7 @@ public class MySQL2Library : ILibrary
         await Task.CompletedTask;
     }
 
+    /// <inheritdoc />
     public async Task<HealthCheckResult> HealthCheckAsync()
     {
         if (_context == null || _connectionManager == null)
@@ -183,6 +191,92 @@ public class MySQL2Library : ILibrary
         catch (Exception ex)
         {
             _logger?.Error($"Failed to create query builder", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Begins a new database transaction, returning a disposable scope object.
+    /// </summary>
+    /// <param name="connectionId">The database connection to use.</param>
+    /// <returns>A TransactionScope that manages the transaction lifecycle.</returns>
+    public async Task<TransactionScope> BeginTransactionAsync(string connectionId = "Default")
+    {
+        if (_connectionManager == null)
+        {
+            throw new InvalidOperationException("Cannot begin transaction: ConnectionManager not initialized.");
+        }
+
+        var connection = await _connectionManager.OpenConnectionAsync(connectionId);
+        var transaction = await connection.BeginTransactionAsync();
+        
+        _logger?.Debug($"Beginning new transaction {transaction.GetHashCode()} for connection '{connectionId}'.");
+
+        return new TransactionScope(connection, transaction, _connectionManager, connectionId, _logger);
+    }
+
+    /// <summary>
+    /// Gets a repository for the specified model type that will operate within the given transaction.
+    /// </summary>
+    public Repository<T>? GetRepository<T>(TransactionScope transaction) where T : class, new()
+    {
+        if (_connectionManager == null)
+        {
+            _logger?.Error("Cannot create repository: ConnectionManager not initialized");
+            return null;
+        }
+
+        try
+        {
+            return new Repository<T>(_connectionManager, _logger, transaction);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to create transactional repository for {typeof(T).Name}", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets a query builder for the specified model type that will operate within the given transaction.
+    /// </summary>
+    public QueryBuilder<T>? GetQueryBuilder<T>(TransactionScope transaction) where T : class, new()
+    {
+        if (_connectionManager == null)
+        {
+            _logger?.Error("Cannot create query builder: ConnectionManager not initialized");
+            return null;
+        }
+
+        try
+        {
+            return new QueryBuilder<T>(_connectionManager, _logger, transaction);
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to create transactional query builder for {typeof(T).Name}", ex);
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// Gets a non-generic query builder factory that will operate within the given transaction.
+    /// </summary>
+    public QueryBuilder? GetQueryBuilder(TransactionScope transaction)
+    {
+        if (_connectionManager == null)
+        {
+            _logger?.Error("Cannot create query builder: ConnectionManager not initialized");
+            return null;
+        }
+
+        try
+        {
+            return new QueryBuilder(_connectionManager, _logger, transaction);
+        }
+        catch (Exception ex)
+        { 
+            _logger?.Error($"Failed to create transactional query builder", ex);
             return null;
         }
     }
@@ -320,291 +414,316 @@ public class MySQL2Library : ILibrary
         Console.WriteLine($"    [CL.MySQL2] LoadDatabaseConfigurationsAsync: mysqlConfigPath = '{mysqlConfigPath}'");
         Console.WriteLine($"    [CL.MySQL2] LoadDatabaseConfigurationsAsync: File.Exists = {File.Exists(mysqlConfigPath)}");
 
-        if (!string.IsNullOrEmpty(mysqlConfigPath) && File.Exists(mysqlConfigPath))
-        {
-            Console.WriteLine($"    [CL.MySQL2] File exists, attempting to load...");
-            _logger?.Info($"Loading MySQL configuration from file: {mysqlConfigPath}");
-
-            try
-            {
-                var fileContent = await File.ReadAllTextAsync(mysqlConfigPath);
-                Console.WriteLine($"    [CL.MySQL2] File content length: {fileContent.Length} bytes");
-
-                var configData = JsonConvert.DeserializeObject<Dictionary<string, object>>(fileContent);
-                Console.WriteLine($"    [CL.MySQL2] Deserialized config count: {configData?.Count ?? 0}");
-
-                if (configData != null && configData.Count > 0)
+                if (!string.IsNullOrEmpty(mysqlConfigPath) && File.Exists(mysqlConfigPath))
                 {
-                    _logger?.Info($"Loaded mysql.json with {configData.Count} configuration(s)");
-
-                    // Try to load as multi-database config (check for known database connection IDs)
-                    var knownConnectionIds = new[] { "Default", "Demo", "Analytics", "Reporting", "Archive", "Staging" };
-                    var loadedConnections = new List<string>();
-
-                    foreach (var connectionId in knownConnectionIds)
+                    Console.WriteLine($"    [CL.MySQL2] File exists, attempting to load...");
+                    _logger?.Info($"Loading MySQL configuration from file: {mysqlConfigPath}");
+        
+                    try
                     {
-                        Console.WriteLine($"    [CL.MySQL2] Checking for connection '{connectionId}': Contains={configData.ContainsKey(connectionId)}");
-
-                        if (configData.ContainsKey(connectionId))
+                        var fileContent = await File.ReadAllTextAsync(mysqlConfigPath);
+                        Console.WriteLine($"    [CL.MySQL2] File content length: {fileContent.Length} bytes");
+        
+                        var configData = JsonConvert.DeserializeObject<Dictionary<string, object>>(fileContent);
+                        Console.WriteLine($"    [CL.MySQL2] Deserialized config count: {configData?.Count ?? 0}");
+        
+                        if (configData != null && configData.Count > 0)
                         {
-                            var configValue = configData[connectionId];
-                            Console.WriteLine($"    [CL.MySQL2] Value type for '{connectionId}': {configValue?.GetType().FullName}");
-
-                            // Convert JObject to Dictionary if needed
-                            Dictionary<string, object>? dbConfigDict = null;
-                            if (configValue is Dictionary<string, object> dict)
+                            _logger?.Info($"Loaded mysql.json with {configData.Count} configuration(s)");
+        
+                            var loadedConnections = new List<string>();
+        
+                            foreach (var connectionId in configData.Keys) // Iterate over actual keys in the file
                             {
-                                dbConfigDict = dict;
-                            }
-                            else if (configValue != null)
-                            {
-                                // Try to convert from JObject or other dynamic types
-                                try
+                                Console.WriteLine($"    [CL.MySQL2] Checking for connection '{connectionId}': Contains={configData.ContainsKey(connectionId)}");
+        
+                                var configValue = configData[connectionId];
+                                Console.WriteLine($"    [CL.MySQL2] Value type for '{connectionId}': {configValue?.GetType().FullName}");
+        
+                                // Convert JObject to Dictionary if needed
+                                Dictionary<string, object>? dbConfigDict = null;
+                                if (configValue is Dictionary<string, object> dict)
                                 {
-                                    dbConfigDict = JsonConvert.DeserializeObject<Dictionary<string, object>>(JsonConvert.SerializeObject(configValue));
+                                    dbConfigDict = dict;
                                 }
-                                catch
+                                else if (configValue != null)
                                 {
-                                    // Conversion failed, skip this connection
+                                    // Try to convert from JObject or other dynamic types
+                                    try
+                                    {
+                                        dbConfigDict = JsonConvert.DeserializeObject<Dictionary<string, object>>(JsonConvert.SerializeObject(configValue));
+                                    }
+                                    catch
+                                    {
+                                        // Conversion failed, skip this connection
+                                    }
+                                }
+        
+                                if (dbConfigDict != null)
+                                {
+                                    // Check if connection is enabled (default: true)
+                                    var enabled = dbConfigDict.ContainsKey("enabled") ? bool.Parse(dbConfigDict["enabled"]?.ToString() ?? "true") : true;
+        
+                                    if (!enabled)
+                                    {
+                                        Console.WriteLine($"    [CL.MySQL2] Skipping disabled connection '{connectionId}'");
+                                        _logger?.Debug($"Skipping disabled database configuration: {connectionId}");
+                                        continue;
+                                    }
+        
+                                    Console.WriteLine($"    [CL.MySQL2] Loading connection '{connectionId}'");
+        
+                                    // This is a multi-database config where connectionId is a sub-key with nested properties
+                                    var host = dbConfigDict.ContainsKey("host") ? dbConfigDict["host"]?.ToString() ?? "localhost" : "localhost";
+                                    var port = dbConfigDict.ContainsKey("port") ? int.Parse(dbConfigDict["port"]?.ToString() ?? "3306") : 3306;
+                                    var dbName = dbConfigDict.ContainsKey("database") ? dbConfigDict["database"]?.ToString() ?? "" : "";
+                                    var username = dbConfigDict.ContainsKey("username") ? dbConfigDict["username"]?.ToString() ?? "" : "";
+                                    var password = dbConfigDict.ContainsKey("password") ? dbConfigDict["password"]?.ToString() ?? "" : "";
+                                    var minPoolSize = dbConfigDict.ContainsKey("min_pool_size") ? int.Parse(dbConfigDict["min_pool_size"]?.ToString() ?? "5") : 5;
+                                    var maxPoolSize = dbConfigDict.ContainsKey("max_pool_size") ? int.Parse(dbConfigDict["max_pool_size"]?.ToString() ?? "100") : 100;
+                                    var maxIdleTime = dbConfigDict.ContainsKey("max_idle_time") ? int.Parse(dbConfigDict["max_idle_time"]?.ToString() ?? "60") : 60;
+                                    var connectionTimeout = dbConfigDict.ContainsKey("connection_timeout") ? int.Parse(dbConfigDict["connection_timeout"]?.ToString() ?? "30") : 30;
+                                    var commandTimeout = dbConfigDict.ContainsKey("command_timeout") ? int.Parse(dbConfigDict["command_timeout"]?.ToString() ?? "30") : 30;
+                                    var characterSet = dbConfigDict.ContainsKey("character_set") ? dbConfigDict["character_set"]?.ToString() ?? "utf8mb4" : "utf8mb4";
+                                    var sslModeStr = dbConfigDict.ContainsKey("ssl_mode") ? dbConfigDict["ssl_mode"]?.ToString() ?? "Preferred" : "Preferred";
+                                    var enableLogging = dbConfigDict.ContainsKey("enable_logging") ? bool.Parse(dbConfigDict["enable_logging"]?.ToString() ?? "false") : false;
+                                    var enableCaching = dbConfigDict.ContainsKey("enable_caching") ? bool.Parse(dbConfigDict["enable_caching"]?.ToString() ?? "true") : true;
+                                    var defaultCacheTtl = dbConfigDict.ContainsKey("default_cache_ttl") ? int.Parse(dbConfigDict["default_cache_ttl"]?.ToString() ?? "300") : 300;
+                                    var logSlowQueries = dbConfigDict.ContainsKey("log_slow_queries") ? bool.Parse(dbConfigDict["log_slow_queries"]?.ToString() ?? "true") : true;
+                                    var slowQueryThreshold = dbConfigDict.ContainsKey("slow_query_threshold") ? int.Parse(dbConfigDict["slow_query_threshold"]?.ToString() ?? "1000") : 1000;
+        
+                                    // New Sync Settings
+                                    var syncModeStr = dbConfigDict.ContainsKey("sync_mode") ? dbConfigDict["sync_mode"]?.ToString() ?? "Safe" : "Safe";
+                                    var syncOnStartup = dbConfigDict.ContainsKey("sync_on_startup") ? bool.Parse(dbConfigDict["sync_on_startup"]?.ToString() ?? "false") : false;
+                                    var backupOnSync = dbConfigDict.ContainsKey("backup_on_sync") ? bool.Parse(dbConfigDict["backup_on_sync"]?.ToString() ?? "true") : true;
+                                    var namespacesToSync = new List<string>();
+                                    if (dbConfigDict.ContainsKey("namespaces_to_sync") && dbConfigDict["namespaces_to_sync"] is object[] syncList)
+                                    {
+                                        namespacesToSync.AddRange(syncList.Select(item => item.ToString()));
+                                    }
+        
+                                    // Parse SSL and Sync modes
+                                    var sslMode = Enum.TryParse<SslMode>(sslModeStr, true, out var parsedSslMode) ? parsedSslMode : SslMode.Preferred;
+                                    var syncMode = Enum.TryParse<SyncMode>(syncModeStr, true, out var parsedSyncMode) ? parsedSyncMode : SyncMode.Safe;
+        
+                                    Console.WriteLine($"    [CL.MySQL2] Parsed config - host={host}, port={port}, database={dbName}");
+        
+                                    if (!string.IsNullOrEmpty(dbName))
+                                    {
+                                        var dbConfig = new DatabaseConfiguration
+                                        {
+                                            ConnectionId = connectionId,
+                                            Enabled = enabled,
+                                            Host = host,
+                                            Port = port,
+                                            Database = dbName,
+                                            Username = username,
+                                            Password = password,
+                                            MinPoolSize = minPoolSize,
+                                            MaxPoolSize = maxPoolSize,
+                                            MaxIdleTime = maxIdleTime,
+                                            ConnectionTimeout = connectionTimeout,
+                                            CommandTimeout = commandTimeout,
+                                            CharacterSet = characterSet,
+                                            SslMode = sslMode,
+                                            EnableLogging = enableLogging,
+                                            EnableCaching = enableCaching,
+                                            DefaultCacheTtl = defaultCacheTtl,
+                                            LogSlowQueries = logSlowQueries,
+                                            SlowQueryThreshold = slowQueryThreshold,
+                                            SyncMode = syncMode,
+                                            SyncOnStartup = syncOnStartup,
+                                            BackupOnSync = backupOnSync,
+                                            NamespacesToSync = namespacesToSync
+                                        };
+        
+                                        RegisterDatabase(connectionId, dbConfig);
+                                        loadedConnections.Add(connectionId);
+                                        _logger?.Info($"Loaded database configuration: {connectionId} -> {dbName}");
+                                    }
                                 }
                             }
-
-                            if (dbConfigDict != null)
+        
+                            if (loadedConnections.Count > 0)
                             {
-                                // Check if connection is enabled (default: true)
-                                var enabled = dbConfigDict.ContainsKey("enabled") ? bool.Parse(dbConfigDict["enabled"]?.ToString() ?? "true") : true;
-
-                                if (!enabled)
-                                {
-                                    Console.WriteLine($"    [CL.MySQL2] Skipping disabled connection '{connectionId}'");
-                                    _logger?.Debug($"Skipping disabled database configuration: {connectionId}");
-                                    continue;
-                                }
-
-                                Console.WriteLine($"    [CL.MySQL2] Loading connection '{connectionId}'");
-
-                            // This is a multi-database config where connectionId is a sub-key with nested properties
-                            var host = dbConfigDict.ContainsKey("host") ? dbConfigDict["host"]?.ToString() ?? "localhost" : "localhost";
-                            var port = dbConfigDict.ContainsKey("port") ? int.Parse(dbConfigDict["port"]?.ToString() ?? "3306") : 3306;
-                            var dbName = dbConfigDict.ContainsKey("database") ? dbConfigDict["database"]?.ToString() ?? "" : "";
-                            var username = dbConfigDict.ContainsKey("username") ? dbConfigDict["username"]?.ToString() ?? "" : "";
-                            var password = dbConfigDict.ContainsKey("password") ? dbConfigDict["password"]?.ToString() ?? "" : "";
-                            var minPoolSize = dbConfigDict.ContainsKey("min_pool_size") ? int.Parse(dbConfigDict["min_pool_size"]?.ToString() ?? "5") : 5;
-                            var maxPoolSize = dbConfigDict.ContainsKey("max_pool_size") ? int.Parse(dbConfigDict["max_pool_size"]?.ToString() ?? "100") : 100;
-                            var maxIdleTime = dbConfigDict.ContainsKey("max_idle_time") ? int.Parse(dbConfigDict["max_idle_time"]?.ToString() ?? "60") : 60;
-                            var connectionTimeout = dbConfigDict.ContainsKey("connection_timeout") ? int.Parse(dbConfigDict["connection_timeout"]?.ToString() ?? "30") : 30;
-                            var commandTimeout = dbConfigDict.ContainsKey("command_timeout") ? int.Parse(dbConfigDict["command_timeout"]?.ToString() ?? "30") : 30;
-                            var characterSet = dbConfigDict.ContainsKey("character_set") ? dbConfigDict["character_set"]?.ToString() ?? "utf8mb4" : "utf8mb4";
-                            var sslModeStr = dbConfigDict.ContainsKey("ssl_mode") ? dbConfigDict["ssl_mode"]?.ToString() ?? "Preferred" : "Preferred";
-                            var enableLogging = dbConfigDict.ContainsKey("enable_logging") ? bool.Parse(dbConfigDict["enable_logging"]?.ToString() ?? "false") : false;
-                            var enableCaching = dbConfigDict.ContainsKey("enable_caching") ? bool.Parse(dbConfigDict["enable_caching"]?.ToString() ?? "true") : true;
-                            var defaultCacheTtl = dbConfigDict.ContainsKey("default_cache_ttl") ? int.Parse(dbConfigDict["default_cache_ttl"]?.ToString() ?? "300") : 300;
-                            var enableAutoSync = dbConfigDict.ContainsKey("enable_auto_sync") ? bool.Parse(dbConfigDict["enable_auto_sync"]?.ToString() ?? "true") : true;
-                            var logSlowQueries = dbConfigDict.ContainsKey("log_slow_queries") ? bool.Parse(dbConfigDict["log_slow_queries"]?.ToString() ?? "true") : true;
-                            var slowQueryThreshold = dbConfigDict.ContainsKey("slow_query_threshold") ? int.Parse(dbConfigDict["slow_query_threshold"]?.ToString() ?? "1000") : 1000;
-
-                            // Parse SSL mode
-                            var sslMode = Enum.TryParse<SslMode>(sslModeStr, true, out var parsedSslMode) ? parsedSslMode : SslMode.Preferred;
-
-                            Console.WriteLine($"    [CL.MySQL2] Parsed config - host={host}, port={port}, database={dbName}");
-
-                            if (!string.IsNullOrEmpty(dbName))
-                            {
-                                var dbConfig = new DatabaseConfiguration
-                                {
-                                    ConnectionId = connectionId,
-                                    Enabled = enabled,
-                                    Host = host,
-                                    Port = port,
-                                    Database = dbName,
-                                    Username = username,
-                                    Password = password,
-                                    MinPoolSize = minPoolSize,
-                                    MaxPoolSize = maxPoolSize,
-                                    MaxIdleTime = maxIdleTime,
-                                    ConnectionTimeout = connectionTimeout,
-                                    CommandTimeout = commandTimeout,
-                                    CharacterSet = characterSet,
-                                    SslMode = sslMode,
-                                    EnableLogging = enableLogging,
-                                    EnableCaching = enableCaching,
-                                    DefaultCacheTtl = defaultCacheTtl,
-                                    EnableAutoSync = enableAutoSync,
-                                    LogSlowQueries = logSlowQueries,
-                                    SlowQueryThreshold = slowQueryThreshold
-                                };
-
-                                RegisterDatabase(connectionId, dbConfig);
-                                loadedConnections.Add(connectionId);
-                                _logger?.Info($"Loaded database configuration: {connectionId} -> {dbName}");
-                            }
+                                _logger?.Info($"Loaded {loadedConnections.Count} database configuration(s) from mysql.json: {string.Join(", ", loadedConnections)}");
                             }
                         }
+                        else
+                        {
+                            Console.WriteLine($"    [CL.MySQL2] WARNING: configData is null or empty!");
+                        }
                     }
-
-                    if (loadedConnections.Count > 0)
+                    catch (Exception ex)
                     {
-                        _logger?.Info($"Loaded {loadedConnections.Count} database configuration(s) from mysql.json: {string.Join(", ", loadedConnections)}");
+                        Console.WriteLine($"    [CL.MySQL2] Exception during file load: {ex.GetType().Name}: {ex.Message}");
+                        _logger?.Warning($"Failed to load MySQL configuration from file: {ex.Message}");
                     }
                 }
                 else
                 {
-                    Console.WriteLine($"    [CL.MySQL2] WARNING: configData is null or empty!");
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"    [CL.MySQL2] Exception during file load: {ex.GetType().Name}: {ex.Message}");
-                _logger?.Warning($"Failed to load MySQL configuration from file: {ex.Message}");
-            }
-        }
-        else
-        {
-            Console.WriteLine($"    [CL.MySQL2] File does not exist, will generate default template");
-
-            // Generate default configuration file if none exists
-            _logger?.Info("No MySQL configuration found, creating default multi-database configuration template...");
-
-            if (_configManager != null)
-            {
-                // Create multi-database template with comprehensive feature showcase
-                var defaultConfig = new Dictionary<string, object>
-                {
-                    ["Default"] = new Dictionary<string, object>
+                    Console.WriteLine($"    [CL.MySQL2] File does not exist, will generate default template");
+        
+                    // Generate default configuration file if none exists
+                    _logger?.Info("No MySQL configuration found, creating default multi-database configuration template...");
+        
+                    if (_configManager != null)
                     {
-                        ["enabled"] = true,
-                        ["host"] = "localhost",
-                        ["port"] = 3306,
-                        ["database"] = "main_database",
-                        ["username"] = "root",
-                        ["password"] = "",
-                        ["min_pool_size"] = 5,
-                        ["max_pool_size"] = 100,
-                        ["max_idle_time"] = 60,
-                        ["connection_timeout"] = 30,
-                        ["command_timeout"] = 30,
-                        ["character_set"] = "utf8mb4",
-                        ["ssl_mode"] = "Preferred",
-                        ["enable_logging"] = true,
-                        ["enable_caching"] = true,
-                        ["default_cache_ttl"] = 300,
-                        ["enable_auto_sync"] = true,
-                        ["log_slow_queries"] = true,
-                        ["slow_query_threshold"] = 1000
-                    },
-                    ["Demo"] = new Dictionary<string, object>
-                    {
-                        ["enabled"] = true,
-                        ["host"] = "localhost",
-                        ["port"] = 3306,
-                        ["database"] = "demo_database",
-                        ["username"] = "root",
-                        ["password"] = "",
-                        ["min_pool_size"] = 5,
-                        ["max_pool_size"] = 100,
-                        ["max_idle_time"] = 60,
-                        ["connection_timeout"] = 30,
-                        ["command_timeout"] = 30,
-                        ["character_set"] = "utf8mb4",
-                        ["ssl_mode"] = "None",
-                        ["enable_logging"] = true,
-                        ["enable_caching"] = true,
-                        ["default_cache_ttl"] = 300,
-                        ["enable_auto_sync"] = true,
-                        ["log_slow_queries"] = true,
-                        ["slow_query_threshold"] = 500
-                    }
-                };
-
-                await _configManager.GenerateDefaultAsync("mysql", defaultConfig);
-                Console.WriteLine($"    [CL.MySQL2] Created default multi-database configuration template at config/mysql.json");
-                Console.WriteLine($"    [CL.MySQL2] Configured with example databases: Default, Demo");
-
-                // Now try to load the databases we just created
-                _logger?.Info("Attempting to load generated multi-database configurations...");
-                var loadedConnections = new List<string>();
-                var knownConnectionIds = new[] { "Default", "Demo", "Analytics", "Reporting", "Archive", "Staging" };
-
-                foreach (var connectionId in knownConnectionIds)
-                {
-                    var configObject = defaultConfig.ContainsKey(connectionId) ? defaultConfig[connectionId] : null;
-
-                    if (configObject is Dictionary<string, object> dbConfigDict)
-                    {
-                        // Check if connection is enabled (default: true)
-                        var enabled = dbConfigDict.ContainsKey("enabled") ? bool.Parse(dbConfigDict["enabled"]?.ToString() ?? "true") : true;
-
-                        if (!enabled)
+                        // Create multi-database template with comprehensive feature showcase
+                        var defaultConfig = new Dictionary<string, object>
                         {
-                            _logger?.Debug($"Skipping disabled database configuration: {connectionId}");
-                            continue;
-                        }
-
-                        var host = dbConfigDict.ContainsKey("host") ? dbConfigDict["host"]?.ToString() ?? "localhost" : "localhost";
-                        var port = dbConfigDict.ContainsKey("port") ? int.Parse(dbConfigDict["port"]?.ToString() ?? "3306") : 3306;
-                        var dbName = dbConfigDict.ContainsKey("database") ? dbConfigDict["database"]?.ToString() ?? "" : "";
-                        var username = dbConfigDict.ContainsKey("username") ? dbConfigDict["username"]?.ToString() ?? "" : "";
-                        var password = dbConfigDict.ContainsKey("password") ? dbConfigDict["password"]?.ToString() ?? "" : "";
-                        var minPoolSize = dbConfigDict.ContainsKey("min_pool_size") ? int.Parse(dbConfigDict["min_pool_size"]?.ToString() ?? "5") : 5;
-                        var maxPoolSize = dbConfigDict.ContainsKey("max_pool_size") ? int.Parse(dbConfigDict["max_pool_size"]?.ToString() ?? "100") : 100;
-                        var maxIdleTime = dbConfigDict.ContainsKey("max_idle_time") ? int.Parse(dbConfigDict["max_idle_time"]?.ToString() ?? "60") : 60;
-                        var connectionTimeout = dbConfigDict.ContainsKey("connection_timeout") ? int.Parse(dbConfigDict["connection_timeout"]?.ToString() ?? "30") : 30;
-                        var commandTimeout = dbConfigDict.ContainsKey("command_timeout") ? int.Parse(dbConfigDict["command_timeout"]?.ToString() ?? "30") : 30;
-                        var characterSet = dbConfigDict.ContainsKey("character_set") ? dbConfigDict["character_set"]?.ToString() ?? "utf8mb4" : "utf8mb4";
-                        var sslModeStr = dbConfigDict.ContainsKey("ssl_mode") ? dbConfigDict["ssl_mode"]?.ToString() ?? "Preferred" : "Preferred";
-                        var enableLogging = dbConfigDict.ContainsKey("enable_logging") ? bool.Parse(dbConfigDict["enable_logging"]?.ToString() ?? "false") : false;
-                        var enableCaching = dbConfigDict.ContainsKey("enable_caching") ? bool.Parse(dbConfigDict["enable_caching"]?.ToString() ?? "true") : true;
-                        var defaultCacheTtl = dbConfigDict.ContainsKey("default_cache_ttl") ? int.Parse(dbConfigDict["default_cache_ttl"]?.ToString() ?? "300") : 300;
-                        var enableAutoSync = dbConfigDict.ContainsKey("enable_auto_sync") ? bool.Parse(dbConfigDict["enable_auto_sync"]?.ToString() ?? "true") : true;
-                        var logSlowQueries = dbConfigDict.ContainsKey("log_slow_queries") ? bool.Parse(dbConfigDict["log_slow_queries"]?.ToString() ?? "true") : true;
-                        var slowQueryThreshold = dbConfigDict.ContainsKey("slow_query_threshold") ? int.Parse(dbConfigDict["slow_query_threshold"]?.ToString() ?? "1000") : 1000;
-
-                        // Parse SSL mode
-                        var sslMode = Enum.TryParse<SslMode>(sslModeStr, true, out var parsedSslMode) ? parsedSslMode : SslMode.Preferred;
-
-                        if (!string.IsNullOrEmpty(dbName))
-                        {
-                            var dbConfig = new DatabaseConfiguration
+                            ["Default"] = new Dictionary<string, object>
                             {
-                                ConnectionId = connectionId,
-                                Enabled = enabled,
-                                Host = host,
-                                Port = port,
-                                Database = dbName,
-                                Username = username,
-                                Password = password,
-                                MinPoolSize = minPoolSize,
-                                MaxPoolSize = maxPoolSize,
-                                MaxIdleTime = maxIdleTime,
-                                ConnectionTimeout = connectionTimeout,
-                                CommandTimeout = commandTimeout,
-                                CharacterSet = characterSet,
-                                SslMode = sslMode,
-                                EnableLogging = enableLogging,
-                                EnableCaching = enableCaching,
-                                DefaultCacheTtl = defaultCacheTtl,
-                                EnableAutoSync = enableAutoSync,
-                                LogSlowQueries = logSlowQueries,
-                                SlowQueryThreshold = slowQueryThreshold
-                            };
-
-                            RegisterDatabase(connectionId, dbConfig);
-                            loadedConnections.Add(connectionId);
-                            _logger?.Info($"Loaded template database configuration: {connectionId} -> {dbName}");
+                                ["enabled"] = true,
+                                ["host"] = "localhost",
+                                ["port"] = 3306,
+                                ["database"] = "main_database",
+                                ["username"] = "root",
+                                ["password"] = "",
+                                ["min_pool_size"] = 5,
+                                ["max_pool_size"] = 100,
+                                ["max_idle_time"] = 60,
+                                ["connection_timeout"] = 30,
+                                ["command_timeout"] = 30,
+                                ["character_set"] = "utf8mb4",
+                                ["ssl_mode"] = "Preferred",
+                                ["enable_logging"] = true,
+                                ["enable_caching"] = true,
+                                ["default_cache_ttl"] = 300,
+                                ["log_slow_queries"] = true,
+                                ["slow_query_threshold"] = 1000,
+                                ["backup_on_sync"] = true,
+                                ["sync_mode"] = "Safe",
+                                ["sync_on_startup"] = false,
+                                ["namespaces_to_sync"] = new[] { "Your.Model.Namespace" }
+                            },
+                            ["Demo"] = new Dictionary<string, object>
+                            {
+                                ["enabled"] = true,
+                                ["host"] = "localhost",
+                                ["port"] = 3306,
+                                ["database"] = "demo_database",
+                                ["username"] = "root",
+                                ["password"] = "",
+                                ["min_pool_size"] = 5,
+                                ["max_pool_size"] = 100,
+                                ["max_idle_time"] = 60,
+                                ["connection_timeout"] = 30,
+                                ["command_timeout"] = 30,
+                                ["character_set"] = "utf8mb4",
+                                ["ssl_mode"] = "None",
+                                ["enable_logging"] = true,
+                                ["enable_caching"] = true,
+                                ["default_cache_ttl"] = 300,
+                                ["log_slow_queries"] = true,
+                                ["slow_query_threshold"] = 500,
+                                ["backup_on_sync"] = true,
+                                ["sync_mode"] = "Safe",
+                                ["sync_on_startup"] = false,
+                                ["namespaces_to_sync"] = new string[0]
+                            }
+                        };
+        
+                        await _configManager.GenerateDefaultAsync("mysql", defaultConfig);
+                        Console.WriteLine($"    [CL.MySQL2] Created default multi-database configuration template at config/mysql.json");
+                        Console.WriteLine($"    [CL.MySQL2] Configured with example databases: Default, Demo");
+        
+                        // Now try to load the databases we just created
+                        _logger?.Info("Attempting to load generated multi-database configurations...");
+                        var loadedConnections = new List<string>();
+                        
+                        foreach (var connectionId in defaultConfig.Keys) // Iterate over actual keys in the generated default config
+                        {
+                            var configObject = defaultConfig.ContainsKey(connectionId) ? defaultConfig[connectionId] : null;
+        
+                            if (configObject is Dictionary<string, object> dbConfigDict)
+                            {
+                                // Check if connection is enabled (default: true)
+                                var enabled = dbConfigDict.ContainsKey("enabled") ? bool.Parse(dbConfigDict["enabled"]?.ToString() ?? "true") : true;
+        
+                                if (!enabled)
+                                {
+                                    _logger?.Debug($"Skipping disabled database configuration: {connectionId}");
+                                    continue;
+                                }
+        
+                                var host = dbConfigDict.ContainsKey("host") ? dbConfigDict["host"]?.ToString() ?? "localhost" : "localhost";
+                                var port = dbConfigDict.ContainsKey("port") ? int.Parse(dbConfigDict["port"]?.ToString() ?? "3306") : 3306;
+                                var dbName = dbConfigDict.ContainsKey("database") ? dbConfigDict["database"]?.ToString() ?? "" : "";
+                                var username = dbConfigDict.ContainsKey("username") ? dbConfigDict["username"]?.ToString() ?? "" : "";
+                                var password = dbConfigDict.ContainsKey("password") ? dbConfigDict["password"]?.ToString() ?? "" : "";
+                                var minPoolSize = dbConfigDict.ContainsKey("min_pool_size") ? int.Parse(dbConfigDict["min_pool_size"]?.ToString() ?? "5") : 5;
+                                var maxPoolSize = dbConfigDict.ContainsKey("max_pool_size") ? int.Parse(dbConfigDict["max_pool_size"]?.ToString() ?? "100") : 100;
+                                var maxIdleTime = dbConfigDict.ContainsKey("max_idle_time") ? int.Parse(dbConfigDict["max_idle_time"]?.ToString() ?? "60") : 60;
+                                var connectionTimeout = dbConfigDict.ContainsKey("connection_timeout") ? int.Parse(dbConfigDict["connection_timeout"]?.ToString() ?? "30") : 30;
+                                var commandTimeout = dbConfigDict.ContainsKey("command_timeout") ? int.Parse(dbConfigDict["command_timeout"]?.ToString() ?? "30") : 30;
+                                var characterSet = dbConfigDict.ContainsKey("character_set") ? dbConfigDict["character_set"]?.ToString() ?? "utf8mb4" : "utf8mb4";
+                                var sslModeStr = dbConfigDict.ContainsKey("ssl_mode") ? dbConfigDict["ssl_mode"]?.ToString() ?? "Preferred" : "Preferred";
+                                var enableLogging = dbConfigDict.ContainsKey("enable_logging") ? bool.Parse(dbConfigDict["enable_logging"]?.ToString() ?? "false") : false;
+                                var enableCaching = dbConfigDict.ContainsKey("enable_caching") ? bool.Parse(dbConfigDict["enable_caching"]?.ToString() ?? "true") : true;
+                                var defaultCacheTtl = dbConfigDict.ContainsKey("default_cache_ttl") ? int.Parse(dbConfigDict["default_cache_ttl"]?.ToString() ?? "300") : 300;
+                                var logSlowQueries = dbConfigDict.ContainsKey("log_slow_queries") ? bool.Parse(dbConfigDict["log_slow_queries"]?.ToString() ?? "true") : true;
+                                var slowQueryThreshold = dbConfigDict.ContainsKey("slow_query_threshold") ? int.Parse(dbConfigDict["slow_query_threshold"]?.ToString() ?? "1000") : 1000;
+        
+                                // New Sync Settings
+                                var syncModeStr = dbConfigDict.ContainsKey("sync_mode") ? dbConfigDict["sync_mode"]?.ToString() ?? "Safe" : "Safe";
+                                var syncOnStartup = dbConfigDict.ContainsKey("sync_on_startup") ? bool.Parse(dbConfigDict["sync_on_startup"]?.ToString() ?? "false") : false;
+                                var backupOnSync = dbConfigDict.ContainsKey("backup_on_sync") ? bool.Parse(dbConfigDict["backup_on_sync"]?.ToString() ?? "true") : true;
+                                var namespacesToSync = new List<string>();
+                                if (dbConfigDict.ContainsKey("namespaces_to_sync") && dbConfigDict["namespaces_to_sync"] is object[] syncList)
+                                {
+                                    namespacesToSync.AddRange(syncList.Select(item => item.ToString()));
+                                }
+        
+                                // Parse SSL and Sync modes
+                                var sslMode = Enum.TryParse<SslMode>(sslModeStr, true, out var parsedSslMode) ? parsedSslMode : SslMode.Preferred;
+                                var syncMode = Enum.TryParse<SyncMode>(syncModeStr, true, out var parsedSyncMode) ? parsedSyncMode : SyncMode.Safe;
+        
+                                if (!string.IsNullOrEmpty(dbName))
+                                {
+                                    var dbConfig = new DatabaseConfiguration
+                                    {
+                                        ConnectionId = connectionId,
+                                        Enabled = enabled,
+                                        Host = host,
+                                        Port = port,
+                                        Database = dbName,
+                                        Username = username,
+                                        Password = password,
+                                        MinPoolSize = minPoolSize,
+                                        MaxPoolSize = maxPoolSize,
+                                        MaxIdleTime = maxIdleTime,
+                                        ConnectionTimeout = connectionTimeout,
+                                        CommandTimeout = commandTimeout,
+                                        CharacterSet = characterSet,
+                                        SslMode = sslMode,
+                                        EnableLogging = enableLogging,
+                                        EnableCaching = enableCaching,
+                                        DefaultCacheTtl = defaultCacheTtl,
+                                        LogSlowQueries = logSlowQueries,
+                                        SlowQueryThreshold = slowQueryThreshold,
+                                        SyncMode = syncMode,
+                                        SyncOnStartup = syncOnStartup,
+                                        BackupOnSync = backupOnSync,
+                                        NamespacesToSync = namespacesToSync
+                                    };
+        
+                                    RegisterDatabase(connectionId, dbConfig);
+                                    loadedConnections.Add(connectionId);
+                                    _logger?.Info($"Loaded template database configuration: {connectionId} -> {dbName}");
+                                }
+                            }
+                        }
+        
+                        if (loadedConnections.Count > 0)
+                        {
+                            _logger?.Info($"Successfully loaded {loadedConnections.Count} database configuration(s) from template: {string.Join(", ", loadedConnections)}");
                         }
                     }
                 }
-
-                if (loadedConnections.Count > 0)
-                {
-                    _logger?.Info($"Successfully loaded {loadedConnections.Count} database configuration(s) from template: {string.Join(", ", loadedConnections)}");
-                }
+        
+                await Task.CompletedTask;
             }
-        }
-
-        await Task.CompletedTask;
-    }
-
     private async Task TestDatabaseConnectionsAsync()
     {
         if (_connectionManager == null)
@@ -637,6 +756,25 @@ public class MySQL2Library : ILibrary
         }
     }
 
+    private async Task RunSyncOnStartupAsync()
+    {
+        if (_tableSyncService == null) return;
+
+        _logger?.Info("Checking for startup synchronization tasks...");
+
+        foreach (var config in _databaseConfigs)
+        {
+            if (config.Value.SyncOnStartup && config.Value.NamespacesToSync.Any())
+            {
+                _logger?.Info($"Running startup sync for connection '{config.Key}' on namespaces: {string.Join(", ", config.Value.NamespacesToSync)}");
+                foreach (var ns in config.Value.NamespacesToSync)
+                {
+                    await _tableSyncService.SyncNamespaceAsync(ns, config.Key, config.Value.BackupOnSync, true);
+                }
+            }
+        }
+    }
+
     /// <summary>
     /// Execute a raw SQL query and return a list of typed results.
     /// Useful for complex queries with JOINs, custom WHERE clauses, etc.
@@ -645,6 +783,7 @@ public class MySQL2Library : ILibrary
     /// <param name="connectionId">Database connection ID</param>
     /// <param name="sql">SQL query string</param>
     /// <param name="parameters">Anonymous object with parameter values</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>Operation result containing list of mapped entities</returns>
     public async Task<OperationResult<List<T>>> QueryAsync<T>(
         string connectionId,
@@ -729,6 +868,7 @@ public class MySQL2Library : ILibrary
     /// <param name="connectionId">Database connection ID</param>
     /// <param name="sql">SQL command string</param>
     /// <param name="parameters">Anonymous object with parameter values</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>Operation result containing number of rows affected</returns>
     public async Task<OperationResult<int>> ExecuteAsync(
         string connectionId,
@@ -776,6 +916,7 @@ public class MySQL2Library : ILibrary
     /// <param name="connectionId">Database connection ID</param>
     /// <param name="sql">SQL query string</param>
     /// <param name="parameters">Anonymous object with parameter values</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
     /// <returns>Operation result containing the scalar value</returns>
     public async Task<OperationResult<TResult>> ExecuteScalarAsync<TResult>(
         string connectionId,
@@ -846,13 +987,20 @@ public class MySQL2Library : ILibrary
 /// </summary>
 public class MySQL2Manifest : ILibraryManifest
 {
+    /// <inheritdoc />
     public string Id => "cl.mysql2";
+    /// <inheritdoc />
     public string Name => "CL.MySQL2";
-    public string Version => "2.0.0";
+    /// <inheritdoc />
+    public string Version => "2.2.0";
+    /// <inheritdoc />
     public string Author => "Media2A";
+    /// <inheritdoc />
     public string Description => "Fully integrated MySQL database library with connection pooling, caching, and comprehensive ORM support";
 
+    /// <inheritdoc />
     public IReadOnlyList<LibraryDependency> Dependencies { get; } = Array.Empty<LibraryDependency>();
 
+    /// <inheritdoc />
     public IReadOnlyList<string> Tags { get; } = new[] { "database", "mysql", "orm", "repository" };
 }

@@ -18,6 +18,10 @@ public class ConnectionManager : IDisposable
     private readonly ILogger? _logger;
     private bool _disposed = false;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="ConnectionManager"/> class.
+    /// </summary>
+    /// <param name="logger">The logger for recording operations and errors.</param>
     public ConnectionManager(ILogger? logger = null)
     {
         _logger = logger;
@@ -276,6 +280,9 @@ public class ConnectionManager : IDisposable
         return _configurations.Keys;
     }
 
+    /// <summary>
+    /// Releases all resources used by the <see cref="ConnectionManager"/>.
+    /// </summary>
     public void Dispose()
     {
         if (_disposed) return;

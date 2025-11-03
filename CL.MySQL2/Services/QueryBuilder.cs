@@ -19,6 +19,7 @@ public class QueryBuilder<T> where T : class, new()
     private readonly List<WhereCondition> _whereConditions = new();
     private readonly List<OrderByClause> _orderByClauses = new();
     private readonly List<JoinClause> _joinClauses = new();
+    private readonly List<LambdaExpression> _includeExpressions = new();
     private readonly List<AggregateFunction> _aggregateFunctions = new();
     private readonly List<string> _groupByColumns = new();
     private int? _limit;
@@ -26,7 +27,14 @@ public class QueryBuilder<T> where T : class, new()
     private string _connectionId = "Default";
     private readonly ConnectionManager _connectionManager;
     private readonly ILogger? _logger;
+    private readonly TransactionScope? _transactionScope;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="QueryBuilder{T}"/> class.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
+    /// <param name="connectionId">The ID of the connection to use.</param>
     public QueryBuilder(ConnectionManager connectionManager, ILogger? logger = null, string connectionId = "Default")
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
@@ -35,6 +43,33 @@ public class QueryBuilder<T> where T : class, new()
 
         var tableAttr = typeof(T).GetCustomAttribute<TableAttribute>();
         _tableName = tableAttr?.Name ?? typeof(T).Name;
+    }
+
+    /// <summary>
+    /// Initializes a new instance of the <see cref="QueryBuilder{T}"/> class to operate within a transaction.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
+    /// <param name="transactionScope">The transaction scope to use for all operations.</param>
+    public QueryBuilder(ConnectionManager connectionManager, ILogger? logger, TransactionScope transactionScope)
+        : this(connectionManager, logger, transactionScope.ConnectionId)
+    {
+        _transactionScope = transactionScope;
+    }
+
+    private async Task<TResult> ExecuteDbOperationAsync<TResult>(Func<MySqlConnection, MySqlTransaction?, Task<TResult>> operation)
+    {
+        if (_transactionScope != null)
+        {
+            return await operation(_transactionScope.Connection, _transactionScope.Transaction);
+        }
+        else
+        {
+            return await _connectionManager.ExecuteWithConnectionAsync(
+                async (connection) => await operation(connection, null),
+                _connectionId
+            );
+        }
     }
 
     /// <summary>
@@ -100,6 +135,16 @@ public class QueryBuilder<T> where T : class, new()
     {
         var columns = CL.MySQL2.Core.ExpressionVisitor.ParseGroupBy<T, TKey>(keySelector);
         _groupByColumns.AddRange(columns);
+        return this;
+    }
+
+    /// <summary>
+    /// Eager-loads a related entity. (Currently only supports one-to-many relationships).
+    /// Example: .Include(p => p.Posts)
+    /// </summary>
+    public QueryBuilder<T> Include<TProperty>(Expression<Func<T, TProperty>> navigationPropertyPath)
+    {
+        _includeExpressions.Add(navigationPropertyPath);
         return this;
     }
 
@@ -286,9 +331,9 @@ public class QueryBuilder<T> where T : class, new()
 
             var config = _connectionManager.GetConfiguration(_connectionId);
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 AddParametersToCommand(cmd);
 
                 if (config.EnableLogging)
@@ -297,11 +342,97 @@ public class QueryBuilder<T> where T : class, new()
                 }
 
                 using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
-                var entities = new List<T>();
+
+                var mainEntities = new Dictionary<object, T>();
+                var pkProperty = typeof(T).GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ColumnAttribute>()?.Primary == true);
+
+                if (pkProperty == null)
+                {
+                    throw new InvalidOperationException($"No primary key defined for type {typeof(T).Name}");
+                }
 
                 while (await reader.ReadAsync(cancellationToken))
                 {
-                    entities.Add(MapReaderToEntity(reader));
+                    var pkValue = reader[$"{_tableName}_{pkProperty.Name}"];
+                    if (pkValue == DBNull.Value) continue;
+
+                    if (!mainEntities.TryGetValue(pkValue, out var mainEntity))
+                    {
+                        mainEntity = new T();
+                        // Map main entity properties
+                        foreach (var prop in typeof(T).GetProperties().Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null))
+                        {
+                            var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
+                            if (colAttr != null)
+                            {
+                                var alias = $"{_tableName}_{prop.Name}";
+                                if (reader.HasColumn(alias) && reader[alias] != DBNull.Value)
+                                {
+                                    var convertedValue = TypeConverter.FromMySql(reader[alias], colAttr.DataType, prop.PropertyType);
+                                    prop.SetValue(mainEntity, convertedValue);
+                                }
+                            }
+                        }
+                        mainEntities[pkValue] = mainEntity;
+                    }
+
+                    // Handle included navigation properties
+                    foreach (var include in _includeExpressions)
+                    {
+                        var memberExpr = include.Body as MemberExpression;
+                        if (memberExpr == null) continue;
+
+                        var navProperty = memberExpr.Member as PropertyInfo;
+                        if (navProperty == null) continue;
+
+                        var childType = navProperty.PropertyType.GetGenericArguments()[0];
+                        var childTableAttr = childType.GetCustomAttribute<TableAttribute>();
+                        var childTableName = childTableAttr?.Name ?? childType.Name;
+                        var childPkProp = childType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ColumnAttribute>()?.Primary == true);
+                        if (childPkProp == null) continue;
+
+                        var childPkAlias = $"{childTableName}_{childPkProp.Name}";
+                        if (!reader.HasColumn(childPkAlias) || reader[childPkAlias] == DBNull.Value) continue;
+
+                        var childPkValue = reader[childPkAlias];
+                        var collection = navProperty.GetValue(mainEntity) as System.Collections.ICollection;
+                        if (collection == null)
+                        {
+                            var listType = typeof(List<>).MakeGenericType(childType);
+                            collection = (System.Collections.ICollection)Activator.CreateInstance(listType);
+                            navProperty.SetValue(mainEntity, collection);
+                        }
+
+                        // Check if child entity is already in the collection
+                        bool exists = false;
+                        foreach (var item in collection)
+                        {
+                            if (childPkProp.GetValue(item).Equals(childPkValue))
+                            {
+                                exists = true;
+                                break;
+                            }
+                        }
+
+                        if (!exists)
+                        {
+                            var childEntity = Activator.CreateInstance(childType);
+                            foreach (var prop in childType.GetProperties().Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null))
+                            {
+                                var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
+                                if (colAttr != null)
+                                {
+                                    var alias = $"{childTableName}_{prop.Name}";
+                                    if (reader.HasColumn(alias) && reader[alias] != DBNull.Value)
+                                    {
+                                        var convertedValue = TypeConverter.FromMySql(reader[alias], colAttr.DataType, prop.PropertyType);
+                                        prop.SetValue(childEntity, convertedValue);
+                                    }
+                                }
+                            }
+                            collection.GetType().GetMethod("Add").Invoke(collection, new[] { childEntity });
+                        }
+                    }
                 }
 
                 var duration = DateTime.UtcNow - startTime;
@@ -310,8 +441,8 @@ public class QueryBuilder<T> where T : class, new()
                     _logger?.Warning($"Slow query detected ({duration.TotalMilliseconds}ms): {sql}");
                 }
 
-                return OperationResult<List<T>>.Ok(entities);
-            }, _connectionId, cancellationToken);
+                return OperationResult<List<T>>.Ok(mainEntities.Values.ToList());
+            });
         }
         catch (Exception ex)
         {
@@ -350,15 +481,12 @@ public class QueryBuilder<T> where T : class, new()
         try
         {
             // Get total count
-            var countQuery = BuildCountQuery();
-
-            var totalItems = await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            var countResult = await CountAsync(cancellationToken);
+            if (!countResult.Success) 
             {
-                using var cmd = new MySqlCommand(countQuery, connection);
-                AddParametersToCommand(cmd);
-
-                return Convert.ToInt64(await cmd.ExecuteScalarAsync(cancellationToken));
-            }, _connectionId, cancellationToken);
+                return OperationResult<PagedResult<T>>.Fail(countResult.ErrorMessage, countResult.Exception);
+            }
+            var totalItems = countResult.Data;
 
             // Get page data
             _offset = (pageNumber - 1) * pageSize;
@@ -395,14 +523,14 @@ public class QueryBuilder<T> where T : class, new()
         {
             var countQuery = BuildCountQuery();
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
-                using var cmd = new MySqlCommand(countQuery, connection);
+                using var cmd = new MySqlCommand(countQuery, connection, transaction);
                 AddParametersToCommand(cmd);
 
                 var count = Convert.ToInt64(await cmd.ExecuteScalarAsync(cancellationToken));
                 return OperationResult<long>.Ok(count);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -421,19 +549,58 @@ public class QueryBuilder<T> where T : class, new()
         {
             var deleteQuery = BuildDeleteQuery();
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
-                using var cmd = new MySqlCommand(deleteQuery, connection);
+                using var cmd = new MySqlCommand(deleteQuery, connection, transaction);
                 AddParametersToCommand(cmd);
 
                 var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
                 return OperationResult<int>.Ok(rowsAffected);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
             _logger?.Error($"Delete query failed: {ex.Message}", ex);
             return OperationResult<int>.Fail($"Delete query failed: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Executes an UPDATE query with WHERE conditions and returns the number of rows affected.
+    /// Example: queryBuilder.Where(u => u.IsActive == false).UpdateAsync(new { IsActive = true, LastModified = DateTime.UtcNow })
+    /// </summary>
+    public async Task<OperationResult<int>> UpdateAsync(object updateValues, CancellationToken cancellationToken = default)
+    {
+        if (!_whereConditions.Any())
+        {
+            return OperationResult<int>.Fail("UPDATE operation without a WHERE clause is not allowed. Please specify a WHERE condition.");
+        }
+
+        try
+        {
+            var updateQuery = BuildUpdateQuery(updateValues, out var updateParameters);
+
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
+            {
+                using var cmd = new MySqlCommand(updateQuery, connection, transaction);
+                
+                // Add parameters for the SET clause
+                foreach (var param in updateParameters)
+                {
+                    cmd.Parameters.AddWithValue(param.Key, param.Value ?? DBNull.Value);
+                }
+
+                // Add parameters for the WHERE clause
+                AddParametersToCommand(cmd);
+
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+                return OperationResult<int>.Ok(rowsAffected);
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Update query failed: {ex.Message}", ex);
+            return OperationResult<int>.Fail($"Update query failed: {ex.Message}", ex);
         }
     }
 
@@ -447,7 +614,131 @@ public class QueryBuilder<T> where T : class, new()
 
     private string BuildSelectQuery()
     {
+        var includedNavigations = new List<(PropertyInfo, Type, string)>();
+
+        // Handle includes by generating JOINs
+        foreach (var include in _includeExpressions)
+        {
+            var memberExpr = include.Body as MemberExpression;
+            if (memberExpr == null) continue;
+
+            var navProperty = memberExpr.Member as PropertyInfo;
+            if (navProperty == null) continue;
+
+            var parentType = typeof(T);
+            var parentTableName = _tableName;
+
+            var m2mAttr = navProperty.GetCustomAttribute<ManyToManyAttribute>();
+
+            // Many-to-Many
+            if (m2mAttr != null)
+            {
+                var childType = navProperty.PropertyType.GetGenericArguments()[0];
+                var childTableAttr = childType.GetCustomAttribute<TableAttribute>();
+                var childTableName = childTableAttr?.Name ?? childType.Name;
+
+                var junctionType = m2mAttr.JunctionEntityType;
+                var junctionTableAttr = junctionType.GetCustomAttribute<TableAttribute>();
+                var junctionTableName = junctionTableAttr?.Name ?? junctionType.Name;
+
+                // Join 1: Parent -> Junction
+                var parentPkProp = parentType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ColumnAttribute>()?.Primary == true);
+                var parentPkName = parentPkProp.GetCustomAttribute<ColumnAttribute>()?.Name ?? parentPkProp.Name;
+                var fkToParent = junctionType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ForeignKeyAttribute>()?.ReferenceTable.Equals(parentTableName, StringComparison.OrdinalIgnoreCase) == true);
+                var fkToParentName = fkToParent.GetCustomAttribute<ColumnAttribute>()?.Name ?? fkToParent.Name;
+                _joinClauses.Add(new JoinClause { Type = JoinType.Left, Table = junctionTableName, Condition = $"`{parentTableName}`.`{parentPkName}` = `{junctionTableName}`.`{fkToParentName}`" });
+
+                // Join 2: Junction -> Child
+                var childPkProp = childType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ColumnAttribute>()?.Primary == true);
+                var childPkName = childPkProp.GetCustomAttribute<ColumnAttribute>()?.Name ?? childPkProp.Name;
+                var fkToChild = junctionType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ForeignKeyAttribute>()?.ReferenceTable.Equals(childTableName, StringComparison.OrdinalIgnoreCase) == true);
+                var fkToChildName = fkToChild.GetCustomAttribute<ColumnAttribute>()?.Name ?? fkToChild.Name;
+                _joinClauses.Add(new JoinClause { Type = JoinType.Left, Table = childTableName, Condition = $"`{junctionTableName}`.`{fkToChildName}` = `{childTableName}`.`{childPkName}`" });
+
+                includedNavigations.Add((navProperty, childType, childTableName));
+            }
+            // One-to-Many or Many-to-One
+            else
+            {
+                var childType = navProperty.PropertyType;
+                // One-to-many
+                if (childType.IsGenericType && typeof(System.Collections.IEnumerable).IsAssignableFrom(childType))
+                {
+                    childType = childType.GetGenericArguments()[0];
+                    var childTableAttr = childType.GetCustomAttribute<TableAttribute>();
+                    var childTableName = childTableAttr?.Name ?? childType.Name;
+
+                    var foreignKeyProp = childType.GetProperties().FirstOrDefault(p => 
+                        p.GetCustomAttribute<ForeignKeyAttribute>()?.ReferenceTable.Equals(parentTableName, StringComparison.OrdinalIgnoreCase) == true ||
+                        p.GetCustomAttribute<ForeignKeyAttribute>()?.ReferenceTable.Equals(parentType.Name, StringComparison.OrdinalIgnoreCase) == true
+                    );
+
+                    if (foreignKeyProp != null)
+                    {
+                        var parentPkProp = parentType.GetProperties().FirstOrDefault(p => p.GetCustomAttribute<ColumnAttribute>()?.Primary == true);
+                        var parentPkName = parentPkProp?.GetCustomAttribute<ColumnAttribute>()?.Name ?? parentPkProp?.Name ?? "id";
+                        var childFkName = foreignKeyProp.GetCustomAttribute<ColumnAttribute>()?.Name ?? foreignKeyProp.Name;
+
+                        _joinClauses.Add(new JoinClause { Type = JoinType.Left, Table = childTableName, Condition = $"`{parentTableName}`.`{parentPkName}` = `{childTableName}`.`{childFkName}`" });
+                        includedNavigations.Add((navProperty, childType, childTableName));
+                    }
+                }
+                // Many-to-one
+                else
+                {
+                    var fkAttr = navProperty.GetCustomAttribute<ForeignKeyAttribute>();
+                    if (fkAttr != null)
+                    {
+                        var referencedTable = fkAttr.ReferenceTable;
+                        var referencedColumn = fkAttr.ReferenceColumn;
+                        var localColumn = navProperty.GetCustomAttribute<ColumnAttribute>()?.Name ?? navProperty.Name;
+
+                         _joinClauses.Add(new JoinClause { Type = JoinType.Left, Table = referencedTable, Condition = $"`{parentTableName}`.`{localColumn}` = `{referencedTable}`.`{referencedColumn}`" });
+                        includedNavigations.Add((navProperty, childType, referencedTable));
+                    }
+                }
+            }
+        }
+
         var sb = new StringBuilder();
+        sb.Append("SELECT ");
+
+        if (_includeExpressions.Any())
+        {
+            var allSelectColumns = new List<string>();
+            var baseProps = typeof(T).GetProperties().Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null);
+            foreach (var prop in baseProps)
+            {
+                var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
+                if(colAttr != null && prop.GetCustomAttribute<ForeignKeyAttribute>() == null)
+                {
+                    allSelectColumns.Add($"`{_tableName}`.`{colAttr.Name ?? prop.Name}` AS `{_tableName}_{prop.Name}`");
+                }
+            }
+
+            foreach (var (navProp, type, tableName) in includedNavigations)
+            {
+                var includedProps = type.GetProperties().Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null);
+                foreach (var prop in includedProps)
+                {
+                    var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
+                    if(colAttr != null)
+                    {
+                        allSelectColumns.Add($"`{tableName}`.`{colAttr.Name ?? prop.Name}` AS `{tableName}_{prop.Name}`");
+                    }
+                }
+            }
+            sb.Append(string.Join(", ", allSelectColumns.Distinct()));
+        }
+        else if (_selectColumns.Any())
+        {
+            sb.Append(string.Join(", ", _selectColumns.Select(c => $"`{c}`")));
+        }
+        else
+        {
+            sb.Append("*");
+        }
+
 
         // SELECT clause
         sb.Append("SELECT ");
@@ -647,6 +938,57 @@ public class QueryBuilder<T> where T : class, new()
         return sb.ToString();
     }
 
+    private string BuildUpdateQuery(object updateValues, out Dictionary<string, object> parameters)
+    {
+        parameters = new Dictionary<string, object>();
+        var sb = new StringBuilder();
+        sb.Append($"UPDATE `{_tableName}` SET ");
+
+        var setClauses = new List<string>();
+        var updateProps = updateValues.GetType().GetProperties();
+        foreach (var prop in updateProps)
+        {
+            var paramName = $"@set_{prop.Name}";
+            setClauses.Add($"`{prop.Name}` = {paramName}");
+            parameters[paramName] = prop.GetValue(updateValues);
+        }
+        sb.Append(string.Join(", ", setClauses));
+
+        // WHERE clause (reusing existing logic)
+        if (_whereConditions.Any())
+        {
+            sb.Append(" WHERE ");
+            for (int i = 0; i < _whereConditions.Count; i++)
+            {
+                var condition = _whereConditions[i];
+                if (i > 0)
+                    sb.Append($" {condition.LogicalOperator} ");
+
+                if (condition.Operator.Equals("IN", StringComparison.OrdinalIgnoreCase) &&
+                    condition.Value is Array arr)
+                {
+                    var paramNames = new List<string>();
+                    for (int j = 0; j < arr.Length; j++)
+                    {
+                        paramNames.Add($"@p{i}_{j}");
+                    }
+                    sb.Append($"`{condition.Column}` IN ({string.Join(", ", paramNames)})");
+                }
+                else if (condition.Operator.Equals("BETWEEN", StringComparison.OrdinalIgnoreCase) &&
+                         condition.Value is Array betweenArr && betweenArr.Length == 2)
+                {
+                    sb.Append($"`{condition.Column}` BETWEEN @p{i}_0 AND @p{i}_1");
+                }
+                else
+                {
+                    sb.Append($"`{condition.Column}` {condition.Operator} @p{i}");
+                }
+            }
+        }
+
+        return sb.ToString();
+    }
+
     private void AddParametersToCommand(MySqlCommand cmd)
     {
         for (int i = 0; i < _whereConditions.Count; i++)
@@ -674,40 +1016,7 @@ public class QueryBuilder<T> where T : class, new()
         }
     }
 
-    private T MapReaderToEntity(MySqlDataReader reader)
-    {
-        var entity = new T();
-        var properties = typeof(T).GetProperties()
-            .Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null)
-            .ToArray();
 
-        foreach (var prop in properties)
-        {
-            var columnAttr = prop.GetCustomAttribute<ColumnAttribute>();
-            if (columnAttr == null)
-                continue;
-
-            var columnName = columnAttr.Name ?? prop.Name;
-
-            try
-            {
-                var ordinal = reader.GetOrdinal(columnName);
-                var value = reader.GetValue(ordinal);
-
-                if (value != DBNull.Value)
-                {
-                    var convertedValue = TypeConverter.FromMySql(value, columnAttr.DataType, prop.PropertyType);
-                    prop.SetValue(entity, convertedValue);
-                }
-            }
-            catch
-            {
-                // Column doesn't exist in result set, skip
-            }
-        }
-
-        return entity;
-    }
 }
 
 /// <summary>
@@ -718,7 +1027,14 @@ public class QueryBuilder
     private readonly ConnectionManager _connectionManager;
     private readonly ILogger? _logger;
     private readonly string _connectionId;
+    private readonly TransactionScope? _transactionScope;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="QueryBuilder"/> class.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
+    /// <param name="connectionId">The ID of the connection to use.</param>
     public QueryBuilder(ConnectionManager connectionManager, ILogger? logger = null, string connectionId = "Default")
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
@@ -727,10 +1043,50 @@ public class QueryBuilder
     }
 
     /// <summary>
+    /// Initializes a new instance of the <see cref="QueryBuilder"/> class to operate within a transaction.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
+    /// <param name="transactionScope">The transaction scope to use for all operations.</param>
+    public QueryBuilder(ConnectionManager connectionManager, ILogger? logger, TransactionScope transactionScope)
+        : this(connectionManager, logger, transactionScope.ConnectionId)
+    {
+        _transactionScope = transactionScope;
+    }
+
+    /// <summary>
     /// Creates a query builder for the specified model type.
     /// </summary>
     public QueryBuilder<T> For<T>() where T : class, new()
     {
+        if (_transactionScope != null)
+        {
+            return new QueryBuilder<T>(_connectionManager, _logger, _transactionScope);
+        }
         return new QueryBuilder<T>(_connectionManager, _logger, _connectionId);
+    }
+}
+
+/// <summary>
+/// Provides extension methods for <see cref="MySqlDataReader"/>.
+/// </summary>
+public static class MySqlDataReaderExtensions
+{
+    /// <summary>
+    /// Checks if a column exists in the data reader.
+    /// </summary>
+    /// <param name="reader">The data reader.</param>
+    /// <param name="columnName">The name of the column to check.</param>
+    /// <returns>True if the column exists, otherwise false.</returns>
+    public static bool HasColumn(this MySqlDataReader reader, string columnName)
+    {
+        for (int i = 0; i < reader.FieldCount; i++)
+        {
+            if (reader.GetName(i).Equals(columnName, StringComparison.OrdinalIgnoreCase))
+            {
+                return true;
+            }
+        }
+        return false;
     }
 }

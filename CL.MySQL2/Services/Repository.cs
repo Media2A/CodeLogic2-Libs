@@ -21,8 +21,15 @@ public class Repository<T> where T : class, new()
     private readonly DatabaseConfiguration _config;
     private readonly ConnectionManager _connectionManager;
     private readonly ILogger? _logger;
+    private readonly TransactionScope? _transactionScope;
     private static readonly ConcurrentDictionary<string, PropertyInfo[]> _propertyCache = new();
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Repository{T}"/> class.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
+    /// <param name="connectionId">The ID of the connection to use.</param>
     public Repository(ConnectionManager connectionManager, ILogger? logger = null, string connectionId = "Default")
     {
         _connectionManager = connectionManager ?? throw new ArgumentNullException(nameof(connectionManager));
@@ -36,16 +43,51 @@ public class Repository<T> where T : class, new()
         _cache = new MemoryCache(new MemoryCacheOptions { SizeLimit = 1000 });
     }
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="Repository{T}"/> class to operate within a transaction.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
+    /// <param name="transactionScope">The transaction scope to use for all operations.</param>
+    public Repository(ConnectionManager connectionManager, ILogger? logger, TransactionScope transactionScope)
+        : this(connectionManager, logger, transactionScope.ConnectionId)
+    {
+        _transactionScope = transactionScope;
+    }
+
+    private async Task<TResult> ExecuteDbOperationAsync<TResult>(Func<MySqlConnection, MySqlTransaction?, Task<TResult>> operation)
+    {
+        if (_transactionScope != null)
+        {
+            // We are in a transaction, use its connection and transaction object
+            return await operation(_transactionScope.Connection, _transactionScope.Transaction);
+        }
+        else
+        {
+            // Not in a transaction, get a connection from the pool.
+            return await _connectionManager.ExecuteWithConnectionAsync(
+                async (connection) => await operation(connection, null),
+                _connectionId
+            );
+        }
+    }
+
+    /// <summary>
+    /// Inserts a single entity into the database.
+    /// </summary>
+    /// <param name="entity">The entity to insert.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the inserted entity, with its primary key populated if it's an auto-increment column.</returns>
     public async Task<OperationResult<T>> InsertAsync(T entity, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var (columns, values, parameters) = BuildInsertParameters(entity);
                 var sql = $"INSERT INTO `{_tableName}` ({columns}) VALUES ({values}); SELECT LAST_INSERT_ID();";
 
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 foreach (var param in parameters)
                     cmd.Parameters.AddWithValue(param.Key, param.Value ?? DBNull.Value);
 
@@ -56,7 +98,7 @@ public class Repository<T> where T : class, new()
                     _logger?.Debug($"Inserted record into {_tableName}");
 
                 return OperationResult<T>.Ok(entity, 1);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -65,6 +107,83 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    /// <summary>
+    /// Inserts a collection of entities into the database in a single, efficient operation.
+    /// </summary>
+    /// <param name="entities">The collection of entities to insert.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the number of rows affected.</returns>
+    public async Task<OperationResult<int>> InsertManyAsync(IEnumerable<T> entities, CancellationToken cancellationToken = default)
+    {
+        if (entities == null || !entities.Any())
+        {
+            return OperationResult<int>.Ok(0);
+        }
+
+        try
+        {
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
+            {
+                var properties = GetCachedProperties()
+                    .Where(p => {
+                        var attr = p.GetCustomAttribute<ColumnAttribute>();
+                        return attr != null && !attr.AutoIncrement && (attr.DefaultValue == null || !p.GetValue(new T())!.Equals(GetDefaultValue(p.PropertyType)));
+                    }).ToList();
+
+                var columnNames = properties.Select(p => $"`{p.GetCustomAttribute<ColumnAttribute>()?.Name ?? p.Name}`").ToList();
+                var columnsSql = string.Join(", ", columnNames);
+
+                var valueClauses = new List<string>();
+                var parameters = new Dictionary<string, object?>();
+                int entityIndex = 0;
+
+                foreach (var entity in entities)
+                {
+                    var paramNames = new List<string>();
+                    foreach (var prop in properties)
+                    {
+                        var paramName = $"@p{entityIndex}_{prop.Name}";
+                        paramNames.Add(paramName);
+                        
+                        var columnAttr = prop.GetCustomAttribute<ColumnAttribute>();
+                        var value = prop.GetValue(entity);
+                        var convertedValue = TypeConverter.ToMySql(value, columnAttr.DataType);
+                        parameters[paramName] = convertedValue;
+                    }
+                    valueClauses.Add($"({string.Join(", ", paramNames)})");
+                    entityIndex++;
+                }
+
+                var sql = $"INSERT INTO `{_tableName}` ({columnsSql}) VALUES {string.Join(", ", valueClauses)};";
+
+                using var cmd = new MySqlCommand(sql, connection, transaction);
+                foreach (var param in parameters)
+                {
+                    cmd.Parameters.AddWithValue(param.Key, param.Value ?? DBNull.Value);
+                }
+
+                var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
+
+                if (_config.EnableLogging)
+                    _logger?.Debug($"Inserted {rowsAffected} records into {_tableName}");
+
+                return OperationResult<int>.Ok(rowsAffected);
+            });
+        }
+        catch (Exception ex)
+        {
+            _logger?.Error($"Failed to bulk insert records into {_tableName}", ex);
+            return OperationResult<int>.Fail($"Failed to bulk insert records: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Retrieves a single entity by its primary key.
+    /// </summary>
+    /// <param name="id">The primary key value.</param>
+    /// <param name="cacheTtl">The time-to-live for the cache entry in seconds. 0 to disable caching for this call.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the found entity, or null if not found.</returns>
     public async Task<OperationResult<T>> GetByIdAsync(object id, int cacheTtl = 0, CancellationToken cancellationToken = default)
     {
         try
@@ -83,6 +202,14 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    /// <summary>
+    /// Retrieves a single entity by a specific column and value.
+    /// </summary>
+    /// <param name="columnName">The name of the column to query.</param>
+    /// <param name="value">The value to search for.</param>
+    /// <param name="cacheTtl">The time-to-live for the cache entry in seconds. 0 to disable caching for this call.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the found entity, or null if not found.</returns>
     public async Task<OperationResult<T>> GetByColumnAsync(string columnName, object value, int cacheTtl = 0, CancellationToken cancellationToken = default)
     {
         try
@@ -92,11 +219,11 @@ public class Repository<T> where T : class, new()
             if (cacheTtl > 0 && _config.EnableCaching && _cache.TryGetValue<T>(cacheKey, out var cached))
                 return OperationResult<T>.Ok(cached);
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var sql = $"SELECT * FROM `{_tableName}` WHERE `{columnName}` = @value LIMIT 1";
 
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 cmd.Parameters.AddWithValue("@value", value ?? DBNull.Value);
 
                 using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
@@ -118,7 +245,7 @@ public class Repository<T> where T : class, new()
                 }
 
                 return OperationResult<T>.Ok(null);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -127,6 +254,12 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    /// <summary>
+    /// Retrieves all entities from the table.
+    /// </summary>
+    /// <param name="cacheTtl">The time-to-live for the cache entry in seconds. 0 to disable caching for this call.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing a list of all entities.</returns>
     public async Task<OperationResult<List<T>>> GetAllAsync(int cacheTtl = 0, CancellationToken cancellationToken = default)
     {
         try
@@ -136,10 +269,10 @@ public class Repository<T> where T : class, new()
             if (cacheTtl > 0 && _config.EnableCaching && _cache.TryGetValue<List<T>>(cacheKey, out var cached))
                 return OperationResult<List<T>>.Ok(cached);
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var sql = $"SELECT * FROM `{_tableName}`";
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 using var reader = await cmd.ExecuteReaderAsync(cancellationToken);
 
                 var entities = new List<T>();
@@ -156,7 +289,7 @@ public class Repository<T> where T : class, new()
                 }
 
                 return OperationResult<List<T>>.Ok(entities);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -165,6 +298,14 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    /// <summary>
+    /// Retrieves a paginated list of entities from the table.
+    /// </summary>
+    /// <param name="page">The page number to retrieve.</param>
+    /// <param name="pageSize">The number of items per page.</param>
+    /// <param name="cacheTtl">The time-to-live for the cache entry in seconds. 0 to disable caching for this call.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing a paginated result set.</returns>
     public async Task<OperationResult<PagedResult<T>>> GetPagedAsync(int page, int pageSize, int cacheTtl = 0, CancellationToken cancellationToken = default)
     {
         try
@@ -174,13 +315,14 @@ public class Repository<T> where T : class, new()
             if (cacheTtl > 0 && _config.EnableCaching && _cache.TryGetValue<PagedResult<T>>(cacheKey, out var cached))
                 return OperationResult<PagedResult<T>>.Ok(cached);
 
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
+                // Note: CountAsync will use its own operation scope, which is fine.
                 var totalItems = (await CountAsync(cancellationToken)).Data;
 
                 var offset = (page - 1) * pageSize;
                 var sql = $"SELECT * FROM `{_tableName}` LIMIT @pageSize OFFSET @offset";
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 cmd.Parameters.AddWithValue("@pageSize", pageSize);
                 cmd.Parameters.AddWithValue("@offset", offset);
 
@@ -208,7 +350,7 @@ public class Repository<T> where T : class, new()
                 }
 
                 return OperationResult<PagedResult<T>>.Ok(pagedResult);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -217,18 +359,23 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    /// <summary>
+    /// Gets the total number of records in the table.
+    /// </summary>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the total record count.</returns>
     public async Task<OperationResult<int>> CountAsync(CancellationToken cancellationToken = default)
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var sql = $"SELECT COUNT(*) FROM `{_tableName}`";
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 var result = await cmd.ExecuteScalarAsync(cancellationToken);
                 var count = Convert.ToInt32(result);
                 return OperationResult<int>.Ok(count);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -238,11 +385,17 @@ public class Repository<T> where T : class, new()
     }
 
 
+    /// <summary>
+    /// Updates a single entity in the database based on its primary key.
+    /// </summary>
+    /// <param name="entity">The entity with its updated values.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the updated entity.</returns>
     public async Task<OperationResult<T>> UpdateAsync(T entity, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var primaryKey = GetPrimaryKeyProperty();
                 if (primaryKey == null)
@@ -264,7 +417,7 @@ public class Repository<T> where T : class, new()
                 var (setClause, parameters) = BuildUpdateParameters(entity);
                 var sql = $"UPDATE `{_tableName}` SET {setClause} WHERE `{pkColumnName}` = @__pk__";
 
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 cmd.Parameters.AddWithValue("@__pk__", pkValue ?? DBNull.Value);
 
                 foreach (var param in parameters)
@@ -276,7 +429,7 @@ public class Repository<T> where T : class, new()
                     _logger?.Debug($"Updated {rowsAffected} record(s) in {_tableName}");
 
                 return OperationResult<T>.Ok(entity, rowsAffected);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -285,11 +438,17 @@ public class Repository<T> where T : class, new()
         }
     }
 
+    /// <summary>
+    /// Deletes a single entity from the database by its primary key.
+    /// </summary>
+    /// <param name="id">The primary key value of the entity to delete.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing the number of rows affected.</returns>
     public async Task<OperationResult<int>> DeleteAsync(object id, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var primaryKey = GetPrimaryKeyProperty();
                 if (primaryKey == null)
@@ -298,7 +457,7 @@ public class Repository<T> where T : class, new()
                 var columnName = primaryKey.GetCustomAttribute<ColumnAttribute>()?.Name ?? primaryKey.Name;
                 var sql = $"DELETE FROM `{_tableName}` WHERE `{columnName}` = @id";
 
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 cmd.Parameters.AddWithValue("@id", id ?? DBNull.Value);
 
                 var rowsAffected = await cmd.ExecuteNonQueryAsync(cancellationToken);
@@ -307,7 +466,7 @@ public class Repository<T> where T : class, new()
                     _logger?.Debug($"Deleted {rowsAffected} record(s) from {_tableName}");
 
                 return OperationResult<int>.Ok(rowsAffected, rowsAffected);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -324,7 +483,7 @@ public class Repository<T> where T : class, new()
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var primaryKey = GetPrimaryKeyProperty();
                 if (primaryKey == null)
@@ -345,7 +504,7 @@ public class Repository<T> where T : class, new()
 
                 var sql = $"UPDATE `{_tableName}` SET `{columnName}` = `{columnName}` + @amount WHERE `{pkColumnName}` = @id";
 
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 cmd.Parameters.AddWithValue("@amount", amount);
                 cmd.Parameters.AddWithValue("@id", id ?? DBNull.Value);
 
@@ -355,7 +514,7 @@ public class Repository<T> where T : class, new()
                     _logger?.Debug($"Incremented {columnName} by {amount} in {_tableName}");
 
                 return OperationResult<int>.Ok(rowsAffected);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -373,7 +532,7 @@ public class Repository<T> where T : class, new()
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var primaryKey = GetPrimaryKeyProperty();
                 if (primaryKey == null)
@@ -402,7 +561,7 @@ public class Repository<T> where T : class, new()
                     sql = $"UPDATE `{_tableName}` SET `{columnName}` = `{columnName}` - @amount WHERE `{pkColumnName}` = @id";
                 }
 
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 cmd.Parameters.AddWithValue("@amount", amount);
                 cmd.Parameters.AddWithValue("@id", id ?? DBNull.Value);
 
@@ -412,7 +571,7 @@ public class Repository<T> where T : class, new()
                     _logger?.Debug($"Decremented {columnName} by {amount} in {_tableName}");
 
                 return OperationResult<int>.Ok(rowsAffected);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {
@@ -421,12 +580,19 @@ public class Repository<T> where T : class, new()
         }
     }
 
-
+    /// <summary>
+    /// Finds a paginated list of entities that match a set of conditions.
+    /// </summary>
+    /// <param name="conditions">A collection of where conditions to apply.</param>
+    /// <param name="page">The page number to retrieve.</param>
+    /// <param name="pageSize">The number of items per page.</param>
+    /// <param name="cancellationToken">A token to cancel the operation.</param>
+    /// <returns>An operation result containing a paginated result set of matching entities.</returns>
     public async Task<OperationResult<PagedResult<T>>> FindAsync(IEnumerable<WhereCondition> conditions, int page, int pageSize, CancellationToken cancellationToken = default)
     {
         try
         {
-            return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
+            return await ExecuteDbOperationAsync(async (connection, transaction) =>
             {
                 var whereClauses = new List<string>();
                 var parameters = new Dictionary<string, object>();
@@ -440,7 +606,7 @@ public class Repository<T> where T : class, new()
                 var whereSql = whereClauses.Any() ? $"WHERE {string.Join(" AND ", whereClauses)}" : "";
 
                 var countSql = $"SELECT COUNT(*) FROM `{_tableName}` {whereSql}";
-                using var countCmd = new MySqlCommand(countSql, connection);
+                using var countCmd = new MySqlCommand(countSql, connection, transaction);
                 foreach (var param in parameters)
                 {
                     countCmd.Parameters.AddWithValue(param.Key, param.Value);
@@ -449,7 +615,7 @@ public class Repository<T> where T : class, new()
 
                 var offset = (page - 1) * pageSize;
                 var sql = $"SELECT * FROM `{_tableName}` {whereSql} LIMIT @pageSize OFFSET @offset";
-                using var cmd = new MySqlCommand(sql, connection);
+                using var cmd = new MySqlCommand(sql, connection, transaction);
                 foreach (var param in parameters)
                 {
                     cmd.Parameters.AddWithValue(param.Key, param.Value);
@@ -472,7 +638,7 @@ public class Repository<T> where T : class, new()
                 };
 
                 return OperationResult<PagedResult<T>>.Ok(pagedResult);
-            }, _connectionId, cancellationToken);
+            });
         }
         catch (Exception ex)
         {

@@ -30,7 +30,7 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
     public static (string Column, SortOrder Order) ParseOrderBy<T>(Expression<Func<T, object?>> expression)
     {
         var member = GetMemberExpression(expression.Body);
-        var columnName = member.Member.Name;
+        var columnName = GetColumnName(member.Member);
         return (columnName, SortOrder.Asc);
     }
 
@@ -40,7 +40,7 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
     public static (string Column, SortOrder Order) ParseOrderBy<T, TKey>(Expression<Func<T, TKey>> expression, bool descending = false)
     {
         var member = GetMemberExpression(expression.Body);
-        var columnName = member.Member.Name;
+        var columnName = GetColumnName(member.Member);
         return (columnName, descending ? SortOrder.Desc : SortOrder.Asc);
     }
 
@@ -57,12 +57,12 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
             {
                 var member = GetMemberExpression(arg);
                 if (member != null)
-                    columns.Add(member.Member.Name);
+                    columns.Add(GetColumnName(member.Member));
             }
         }
         else if (expression.Body is MemberExpression member)
         {
-            columns.Add(member.Member.Name);
+            columns.Add(GetColumnName(member.Member));
         }
 
         return columns;
@@ -81,12 +81,12 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
             {
                 var member = GetMemberExpression(arg);
                 if (member != null)
-                    columns.Add(member.Member.Name);
+                    columns.Add(GetColumnName(member.Member));
             }
         }
         else if (expression.Body is MemberExpression member)
         {
-            columns.Add(member.Member.Name);
+            columns.Add(GetColumnName(member.Member));
         }
 
         return columns;
@@ -100,14 +100,15 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
         var columns = new List<string>();
         var member = GetMemberExpression(expression.Body);
         if (member != null)
-            columns.Add(member.Member.Name);
+            columns.Add(GetColumnName(member.Member));
         return columns;
     }
 
+    /// <inheritdoc />
     public override Expression Visit(Expression? node)
     {
         if (node == null)
-            return node;
+            return null;
 
         return node.NodeType switch
         {
@@ -156,7 +157,7 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
         if (member == null)
             return node;
 
-        var columnName = member.Member.Name;
+        var columnName = GetColumnName(member.Member);
         var value = GetValue(node.Right);
 
         if (value == null && node.Left.Type.IsValueType == false)
@@ -185,7 +186,7 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
         return node;
     }
 
-    private Expression VisitMethodCall(MethodCallExpression node)
+    protected override Expression VisitMethodCall(MethodCallExpression node)
     {
         var method = node.Method;
         var member = GetMemberExpression(node.Object) ?? GetMemberExpression(node.Arguments.FirstOrDefault());
@@ -193,7 +194,7 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
         if (member == null)
             return node;
 
-        var columnName = member.Member.Name;
+        var columnName = GetColumnName(member.Member);
 
         // String methods
         if (method.Name == "Contains" && node.Object?.Type == typeof(string))
@@ -254,7 +255,7 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
         // Handle NOT expressions like !u.IsActive
         if (node.Operand is MemberExpression member && member.Type == typeof(bool))
         {
-            var columnName = member.Member.Name;
+            var columnName = GetColumnName(member.Member);
             _conditions.Add(new WhereCondition
             {
                 Column = columnName,
@@ -309,5 +310,15 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
         {
             return null;
         }
+    }
+
+    /// <summary>
+    /// Gets the database column name for a property, checking the [Column(Name="...")] attribute.
+    /// Falls back to the property name if no attribute is found.
+    /// </summary>
+    private static string GetColumnName(MemberInfo member)
+    {
+        var columnAttr = member.GetCustomAttribute<ColumnAttribute>();
+        return columnAttr?.Name ?? member.Name;
     }
 }
