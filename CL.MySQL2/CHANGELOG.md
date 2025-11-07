@@ -1,5 +1,59 @@
 # CL.MySQL2 Changelog
 
+## Version 2.2.0 - Robust Sync & Transaction Control
+
+### Overview
+This version delivers a completely overhauled `TableSyncService` that is now fully schema-aware, and introduces explicit transaction management for fine-grained database control. The documentation has also been completely restructured for clarity.
+
+### New Features
+
+#### Schema Synchronization (`TableSyncService`)
+- ✅ **Full Schema Synchronization**: The sync service now manages the complete lifecycle of columns, indexes, and foreign keys.
+- ✅ **Comprehensive Column Comparison**: Detects changes in data type, size, nullability, default values, auto-increment status, character sets, and comments.
+- ✅ **Full Index Synchronization**: Automatically adds, drops, and modifies single-column and composite indexes to perfectly match model attributes (`[Index]`, `[Unique]`, `[CompositeIndex]`).
+- ✅ **Full Foreign Key Synchronization**: Automatically adds, drops, and modifies foreign key constraints to match `[ForeignKey]` attributes, including `OnDelete` and `OnUpdate` actions.
+
+#### Transaction Management
+- ✅ **Explicit Transactions**: New `BeginTransactionAsync()` method on the `MySQL2Library` returns a disposable `TransactionScope` object to manage the transaction lifecycle.
+- ✅ **Transactional Operations**: `GetRepository()` and `GetQueryBuilder()` now have overloads that accept a `TransactionScope`, ensuring all operations performed with the resulting service occur within that single transaction.
+
+#### Documentation
+- ✅ **Restructured Documentation**: The monolithic `Documentation.md` has been replaced with a structured `docs/` directory, with each file focusing on a specific feature (e.g., `6-schema-synchronization.md`).
+- ✅ **Updated README**: The main `README.md` has been updated to point to the new, clearer documentation structure.
+
+### Bug Fixes & Improvements
+- ✅ **Dynamic Configuration Loading**: Removed hardcoded connection ID checks. The library now dynamically loads whatever connections are defined in `mysql.json`, eliminating confusing log messages.
+
+---
+
+## Version 2.1.0 - Advanced ORM Features & Sync Service
+
+### Overview
+This version introduces advanced ORM features like eager loading for all relationship types, high-performance bulk operations, and a completely overhauled, highly configurable schema synchronization service.
+
+### New Features
+
+#### Querying & Data Manipulation
+- ✅ **`Include()` for Eager Loading**: The `QueryBuilder` now supports a `.Include()` method to eager load related entities, eliminating the "N+1" problem.
+- ✅ **Full Relationship Support**: `Include()` works for one-to-many, many-to-one, and now many-to-many relationships.
+- ✅ **`[ManyToMany]` Attribute**: A new attribute to define many-to-many relationships via a junction entity.
+- ✅ **Bulk Insert**: New `InsertManyAsync()` method on the generic repository for high-performance batch inserts.
+- ✅ **Bulk Update**: New `UpdateAsync()` method on the `QueryBuilder` allows updating multiple rows matching a `WHERE` clause in a single database call.
+
+#### Schema Synchronization (`TableSyncService`)
+- ✅ **`SyncMode` Configuration**: Replaced `EnableAutoSync` with a more powerful `SyncMode` enum (`None`, `Safe`, `Reconstruct`, `Destructive`) for fine-grained control over schema changes.
+- ✅ **`Reconstruct` Mode**: New development-focused mode that can automatically drop and recreate foreign keys to apply schema changes that would otherwise be blocked.
+- ✅ **`Destructive` Mode**: New development-focused mode that can `DROP` and recreate a table to force alignment with the model, wiping all data.
+- ✅ **`SyncOnStartup`**: New configuration option to automatically run schema synchronization when the application starts.
+- ✅ **`NamespacesToSync`**: New configuration to specify which namespaces to scan for models during a startup sync.
+
+#### Documentation
+- ✅ **Consolidated Documentation**: Removed several outdated markdown files and created a single, comprehensive `Documentation.md` file.
+- ✅ **Updated README**: The `README.md` has been updated to be a concise entry point that links to the new documentation.
+- ✅ **Updated Changelog**: This changelog has been updated with all the latest features.
+
+---
+
 ## Version 2.0.0 - Complete Framework Rewrite
 
 ### Overview

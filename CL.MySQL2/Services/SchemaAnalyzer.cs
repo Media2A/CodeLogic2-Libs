@@ -13,6 +13,10 @@ public class SchemaAnalyzer
 {
     private readonly ILogger? _logger;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="SchemaAnalyzer"/> class.
+    /// </summary>
+    /// <param name="logger">The logger for recording operations and errors.</param>
     public SchemaAnalyzer(ILogger? logger = null)
     {
         _logger = logger;
@@ -23,21 +27,37 @@ public class SchemaAnalyzer
     /// </summary>
     public class ModelColumnDefinition
     {
+        /// <summary> Gets or sets the name of the property in the C# model. </summary>
         public string PropertyName { get; set; } = string.Empty;
+        /// <summary> Gets or sets the name of the column in the database. </summary>
         public string ColumnName { get; set; } = string.Empty;
+        /// <summary> Gets or sets the data type of the column. </summary>
         public DataType DataType { get; set; }
+        /// <summary> Gets or sets the size of the column (e.g., for VARCHAR). </summary>
         public int Size { get; set; }
+        /// <summary> Gets or sets the precision for decimal types. </summary>
         public int Precision { get; set; }
+        /// <summary> Gets or sets the scale for decimal types. </summary>
         public int Scale { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column is the primary key. </summary>
         public bool Primary { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column is an auto-incrementing column. </summary>
         public bool AutoIncrement { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column is non-nullable. </summary>
         public bool NotNull { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column has a unique constraint. </summary>
         public bool Unique { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column should be indexed. </summary>
         public bool Index { get; set; }
+        /// <summary> Gets or sets the default value of the column. </summary>
         public string? DefaultValue { get; set; }
+        /// <summary> Gets or sets the character set of the column. </summary>
         public Charset? Charset { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column is unsigned (for numeric types). </summary>
         public bool Unsigned { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column should be updated to the current timestamp on update. </summary>
         public bool OnUpdateCurrentTimestamp { get; set; }
+        /// <summary> Gets or sets the comment for the column. </summary>
         public string? Comment { get; set; }
     }
 
@@ -46,16 +66,27 @@ public class SchemaAnalyzer
     /// </summary>
     public class DatabaseColumnDefinition
     {
+        /// <summary> Gets or sets the name of the column in the database. </summary>
         public string ColumnName { get; set; } = string.Empty;
+        /// <summary> Gets or sets the data type of the column (e.g., 'VARCHAR', 'INT'). </summary>
         public string DataType { get; set; } = string.Empty;
+        /// <summary> Gets or sets the full column type definition from the database (e.g., 'varchar(255)'). </summary>
         public string? ColumnType { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column is nullable. </summary>
         public bool Nullable { get; set; }
+        /// <summary> Gets or sets the key type (e.g., 'PRI', 'UNI', 'MUL'). </summary>
         public string? ColumnKey { get; set; }
+        /// <summary> Gets or sets a value indicating whether this column is an auto-incrementing column. </summary>
         public bool AutoIncrement { get; set; }
+        /// <summary> Gets or sets the default value of the column. </summary>
         public string? DefaultValue { get; set; }
+        /// <summary> Gets or sets extra information from the database (e.g., 'auto_increment'). </summary>
         public string? Extra { get; set; }
+        /// <summary> Gets or sets the character set of the column. </summary>
         public string? CharacterSet { get; set; }
+        /// <summary> Gets or sets the collation of the column. </summary>
         public string? Collation { get; set; }
+        /// <summary> Gets or sets the comment for the column. </summary>
         public string? Comment { get; set; }
     }
 
@@ -270,7 +301,7 @@ public class SchemaAnalyzer
     /// <summary>
     /// Generates a single column definition string.
     /// </summary>
-    private string GenerateColumnDefinition(ModelColumnDefinition col)
+    public string GenerateColumnDefinition(ModelColumnDefinition col)
     {
         var sb = new StringBuilder();
         sb.Append($"`{col.ColumnName}` ");
@@ -365,7 +396,7 @@ public class SchemaAnalyzer
     /// <summary>
     /// Converts C# Charset enum to MySQL charset string.
     /// </summary>
-    private string ConvertCharsetToMysql(Charset charset)
+    public string ConvertCharsetToMysql(Charset charset)
     {
         return charset switch
         {

@@ -19,6 +19,12 @@ public class TableSyncService
     private readonly ILogger? _logger;
     private const string LogFileName = "TableSync";
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="TableSyncService"/> class.
+    /// </summary>
+    /// <param name="connectionManager">The connection manager for database access.</param>
+    /// <param name="dataDirectory">The directory for storing backups and migration data.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
     public TableSyncService(
         ConnectionManager connectionManager,
         string dataDirectory,
@@ -173,11 +179,20 @@ public class TableSyncService
         {
             return await _connectionManager.ExecuteWithConnectionAsync(async connection =>
             {
+                var config = _connectionManager.GetConfiguration(connectionId);
+                var syncMode = config.SyncMode;
+
+                if (syncMode == SyncMode.None)
+                {
+                    _logger?.Info($"Synchronization is disabled for connection '{connectionId}'. Skipping.");
+                    return true;
+                }
+
                 // Get table attributes
                 var tableAttr = modelType.GetCustomAttribute<TableAttribute>();
                 var actualTableName = tableAttr?.Name ?? tableName;
 
-                _logger?.Info($"--- Syncing table: '{actualTableName}' ---");
+                _logger?.Info($"--- Syncing table: '{actualTableName}' with mode: {syncMode} ---");
 
                 // Generate model columns
                 var modelColumns = _schemaAnalyzer.GenerateModelColumnDefinitions(modelType);
@@ -190,6 +205,16 @@ public class TableSyncService
 
                 // Check if table exists
                 var tableExists = await _schemaAnalyzer.TableExistsAsync(connection, actualTableName);
+
+                // Handle Destructive mode
+                if (syncMode == SyncMode.Destructive && tableExists)
+                {
+                    _logger?.Warning($"Destructive sync mode enabled. Dropping table '{actualTableName}'...");
+                    using var dropCmd = new MySqlCommand($"DROP TABLE `{actualTableName}`", connection);
+                    await dropCmd.ExecuteNonQueryAsync();
+                    tableExists = false;
+                    _logger?.Info($"Table '{actualTableName}' dropped successfully.");
+                }
 
                 if (!tableExists)
                 {
@@ -207,7 +232,7 @@ public class TableSyncService
                     _logger?.Info($"Successfully created table '{actualTableName}'");
 
                     // Create indexes
-                    await CreateIndexesAsync(connection, actualTableName, modelColumns);
+                    await CreateIndexesAsync(connection, actualTableName, modelType, modelColumns);
 
                     // Record migration
                     await _migrationTracker.RecordMigrationAsync(
@@ -237,7 +262,8 @@ public class TableSyncService
                         connection,
                         actualTableName,
                         modelColumns,
-                        dbColumns);
+                        dbColumns,
+                        syncMode);
 
                     // Sync primary key
                     var primaryKey = modelColumns.FirstOrDefault(c => c.Primary);
@@ -253,7 +279,10 @@ public class TableSyncService
                     }
 
                     // Sync indexes
-                    await SyncIndexesAsync(connection, actualTableName, modelColumns);
+                    await SyncIndexesAsync(connection, actualTableName, modelType, modelColumns);
+
+                    // Sync Foreign Keys
+                    await SyncForeignKeysAsync(connection, actualTableName, modelType);
 
                     // Record migration
                     await _migrationTracker.RecordMigrationAsync(
@@ -290,7 +319,8 @@ public class TableSyncService
         MySqlConnection connection,
         string tableName,
         List<SchemaAnalyzer.ModelColumnDefinition> modelColumns,
-        List<SchemaAnalyzer.DatabaseColumnDefinition> dbColumns)
+        List<SchemaAnalyzer.DatabaseColumnDefinition> dbColumns,
+        SyncMode syncMode)
     {
         var alterationsSummary = new StringBuilder();
 
@@ -358,8 +388,16 @@ public class TableSyncService
 
                 _logger?.Debug($"Executing: {alterSql}");
 
-                using var cmd = new MySqlCommand(alterSql, connection);
-                await cmd.ExecuteNonQueryAsync();
+                try
+                {
+                    using var cmd = new MySqlCommand(alterSql, connection);
+                    await cmd.ExecuteNonQueryAsync();
+                }
+                catch (MySqlException ex) when (syncMode == SyncMode.Reconstruct && (ex.Number == 1822 || ex.Number == 1217 || ex.Number == 1451))
+                {
+                    _logger?.Warning($"Could not modify column '{modelColumn.ColumnName}' directly due to a foreign key constraint. Attempting to reconstruct constraints. Error: {ex.Message}");
+                    await HandleReconstruction(connection, tableName, alterSql);
+                }
             }
         }
 
@@ -373,18 +411,185 @@ public class TableSyncService
         }
     }
 
+    private async Task HandleReconstruction(MySqlConnection connection, string tableName, string originalAlterSql)
+    {
+        // 1. Get all related foreign keys
+        var relatedFks = await GetRelatedForeignKeysAsync(connection, tableName);
+        if (!relatedFks.Any())
+        {
+            _logger?.Error("Reconstruction failed: Could not find any foreign keys to drop.");
+            throw new InvalidOperationException("Reconstruction failed despite foreign key error.");
+        }
+
+        _logger?.Info($"Found {relatedFks.Count} foreign key(s) to reconstruct for table '{tableName}'.");
+
+        // 2. Drop them
+        await DropForeignKeysAsync(connection, relatedFks);
+
+        // 3. Retry the original command
+        _logger?.Info("Retrying original ALTER TABLE command...");
+        using (var retryCmd = new MySqlCommand(originalAlterSql, connection))
+        {
+            await retryCmd.ExecuteNonQueryAsync();
+        }
+        _logger?.Info("Original command succeeded after dropping constraints.");
+
+        // 4. Recreate them
+        await RecreateForeignKeysAsync(connection, relatedFks);
+    }
+
+    private async Task<List<ForeignKeyInfo>> GetRelatedForeignKeysAsync(MySqlConnection connection, string tableName)
+    {
+        var fks = new List<ForeignKeyInfo>();
+        var sql = @"
+            SELECT 
+                kcu.constraint_name, 
+                kcu.table_name, 
+                kcu.column_name, 
+                kcu.referenced_table_name, 
+                kcu.referenced_column_name,
+                rc.update_rule,
+                rc.delete_rule
+            FROM information_schema.key_column_usage AS kcu
+            JOIN information_schema.referential_constraints AS rc ON kcu.constraint_name = rc.constraint_name AND kcu.table_schema = rc.constraint_schema
+            WHERE kcu.table_schema = DATABASE() AND (kcu.table_name = @tableName OR kcu.referenced_table_name = @tableName);
+        ";
+        
+        using var cmd = new MySqlCommand(sql, connection);
+        cmd.Parameters.AddWithValue("@tableName", tableName);
+
+        using var reader = await cmd.ExecuteReaderAsync();
+        while (await reader.ReadAsync())
+        {
+            fks.Add(new ForeignKeyInfo
+            {
+                ConstraintName = reader.GetString("constraint_name"),
+                TableName = reader.GetString("table_name"),
+                ColumnName = reader.GetString("column_name"),
+                ReferencedTableName = reader.GetString("referenced_table_name"),
+                ReferencedColumnName = reader.GetString("referenced_column_name"),
+                OnUpdate = reader.GetString("update_rule"),
+                OnDelete = reader.GetString("delete_rule")
+            });
+        }
+        return fks;
+    }
+
+    private async Task DropForeignKeysAsync(MySqlConnection connection, List<ForeignKeyInfo> fks)
+    {
+        foreach (var fk in fks)
+        {
+            _logger?.Info($"Dropping foreign key '{fk.ConstraintName}' on table '{fk.TableName}'.");
+            var dropSql = $"ALTER TABLE `{fk.TableName}` DROP FOREIGN KEY `{fk.ConstraintName}`;";
+            using var cmd = new MySqlCommand(dropSql, connection);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    private async Task RecreateForeignKeysAsync(MySqlConnection connection, List<ForeignKeyInfo> fks)
+    {
+        foreach (var fk in fks)
+        {
+            _logger?.Info($"Recreating foreign key '{fk.ConstraintName}' on table '{fk.TableName}'.");
+            var addSql = $"ALTER TABLE `{fk.TableName}` ADD CONSTRAINT `{fk.ConstraintName}` FOREIGN KEY (`{fk.ColumnName}`) REFERENCES `{fk.ReferencedTableName}` (`{fk.ReferencedColumnName}`) ON DELETE {fk.OnDelete} ON UPDATE {fk.OnUpdate};";
+            using var cmd = new MySqlCommand(addSql, connection);
+            await cmd.ExecuteNonQueryAsync();
+        }
+    }
+
+    private class ForeignKeyInfo
+    {
+        public string ConstraintName { get; set; }
+        public string TableName { get; set; }
+        public string ColumnName { get; set; }
+        public string ReferencedTableName { get; set; }
+        public string ReferencedColumnName { get; set; }
+        public string OnUpdate { get; set; }
+        public string OnDelete { get; set; }
+    }
+
     /// <summary>
-    /// Checks if a column definition has changed.
+    /// Checks if a column definition has changed between the model and the database.
     /// </summary>
     private bool ColumnDefinitionChanged(
         SchemaAnalyzer.ModelColumnDefinition modelCol,
         SchemaAnalyzer.DatabaseColumnDefinition dbCol)
     {
-        // Simple comparison - can be enhanced for more detailed checks
-        var typeMatch = dbCol.DataType.Equals(ConvertDataTypeToMysql(modelCol.DataType), StringComparison.OrdinalIgnoreCase);
-        var nullMatch = dbCol.Nullable == !modelCol.NotNull;
+        // 1. Compare Data Type and related properties (Size, Precision, Scale, Unsigned)
+        // Generate the expected full column type string from the model
+        var expectedModelColumnType = _schemaAnalyzer.GenerateColumnDefinition(modelCol)
+                                                    .Replace($"`{modelCol.ColumnName}` ", "") // Remove column name
+                                                    .Trim();
 
-        return !typeMatch || !nullMatch;
+        // The dbCol.ColumnType already contains size/precision/unsigned etc.
+        // Example: VARCHAR(255), INT UNSIGNED, DECIMAL(10,2)
+        if (!dbCol.ColumnType.Equals(expectedModelColumnType, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger?.Debug($"Column '{modelCol.ColumnName}' type mismatch. Model: '{expectedModelColumnType}', DB: '{dbCol.ColumnType}'");
+            return true;
+        }
+
+        // 2. Compare Nullability
+        // dbCol.Nullable is true if it CAN be null, modelCol.NotNull is true if it CANNOT be null
+        if (dbCol.Nullable == modelCol.NotNull)
+        {
+            _logger?.Debug($"Column '{modelCol.ColumnName}' nullability mismatch. Model NotNull: '{modelCol.NotNull}', DB Nullable: '{dbCol.Nullable}'");
+            return true;
+        }
+
+        // 3. Compare AutoIncrement
+        if (dbCol.AutoIncrement != modelCol.AutoIncrement)
+        {
+            _logger?.Debug($"Column '{modelCol.ColumnName}' auto-increment mismatch. Model: '{modelCol.AutoIncrement}', DB: '{dbCol.AutoIncrement}'");
+            return true;
+        }
+
+        // 4. Compare Default Value
+        // Normalize default values for comparison (e.g., NULL vs null, CURRENT_TIMESTAMP vs current_timestamp())
+        var normalizedModelDefault = modelCol.DefaultValue?.ToUpper() ?? (modelCol.NotNull ? "" : "NULL");
+        var normalizedDbDefault = dbCol.DefaultValue?.ToUpper() ?? (dbCol.Nullable ? "NULL" : "");
+
+        // MySQL sometimes returns 'NULL' for actual NULL default, sometimes null. Handle CURRENT_TIMESTAMP variations.
+        if (normalizedModelDefault == "CURRENT_TIMESTAMP" && normalizedDbDefault.Contains("CURRENT_TIMESTAMP"))
+        {
+            // Match, do nothing
+        }
+        else if (!normalizedModelDefault.Equals(normalizedDbDefault, StringComparison.OrdinalIgnoreCase))
+        {
+            _logger?.Debug($"Column '{modelCol.ColumnName}' default value mismatch. Model: '{normalizedModelDefault}', DB: '{normalizedDbDefault}'");
+            return true;
+        }
+
+        // 5. Compare OnUpdateCurrentTimestamp
+        var modelOnUpdate = modelCol.OnUpdateCurrentTimestamp;
+        var dbOnUpdate = dbCol.Extra?.Contains("on update CURRENT_TIMESTAMP", StringComparison.OrdinalIgnoreCase) ?? false;
+        if (modelOnUpdate != dbOnUpdate)
+        {
+            _logger?.Debug($"Column '{modelCol.ColumnName}' on update timestamp mismatch. Model: '{modelOnUpdate}', DB: '{dbOnUpdate}'");
+            return true;
+        }
+
+        // 6. Compare Charset (if specified in model and applicable to type)
+        if (modelCol.Charset.HasValue && (modelCol.DataType == DataType.VarChar || modelCol.DataType == DataType.Char || modelCol.DataType == DataType.Text))
+        {
+            var expectedCharset = _schemaAnalyzer.ConvertCharsetToMysql(modelCol.Charset.Value);
+            if (!dbCol.CharacterSet.Equals(expectedCharset, StringComparison.OrdinalIgnoreCase))
+            {
+                _logger?.Debug($"Column '{modelCol.ColumnName}' charset mismatch. Model: '{expectedCharset}', DB: '{dbCol.CharacterSet}'");
+                return true;
+            }
+        }
+
+        // 7. Compare Comment
+        var normalizedModelComment = modelCol.Comment ?? "";
+        var normalizedDbComment = dbCol.Comment ?? "";
+        if (!normalizedModelComment.Equals(normalizedDbComment))
+        {
+            _logger?.Debug($"Column '{modelCol.ColumnName}' comment mismatch. Model: '{normalizedModelComment}', DB: '{normalizedDbComment}'");
+            return true;
+        }
+
+        return false; // No changes detected
     }
 
     /// <summary>
@@ -468,47 +673,16 @@ public class TableSyncService
     }
 
     /// <summary>
-    /// Creates indexes for a new table.
+    /// Creates indexes for a new table by calling the main sync method.
     /// </summary>
     private async Task CreateIndexesAsync(
         MySqlConnection connection,
         string tableName,
+        Type modelType,
         List<SchemaAnalyzer.ModelColumnDefinition> columns)
     {
         _logger?.Info($"Creating indexes for new table '{tableName}'.");
-
-        foreach (var col in columns)
-        {
-            if (col.Index && col.Unique)
-            {
-                var indexName = $"idx_uniq_{col.ColumnName}_{tableName}";
-                var sql = $"CREATE UNIQUE INDEX `{indexName}` ON `{tableName}` (`{col.ColumnName}`)";
-
-                _logger?.Debug($"Executing: {sql}");
-
-                using var cmd = new MySqlCommand(sql, connection);
-                await cmd.ExecuteNonQueryAsync();
-            }
-            else if (col.Index)
-            {
-                var indexName = $"idx_{col.ColumnName}_{tableName}";
-                var sql = $"CREATE INDEX `{indexName}` ON `{tableName}` (`{col.ColumnName}`)";
-
-                _logger?.Debug($"Executing: {sql}");
-
-                using var cmd = new MySqlCommand(sql, connection);
-                await cmd.ExecuteNonQueryAsync();
-            }
-            else if (col.Unique && !col.Primary)
-            {
-                var sql = $"ALTER TABLE `{tableName}` ADD UNIQUE (`{col.ColumnName}`)";
-
-                _logger?.Debug($"Executing: {sql}");
-
-                using var cmd = new MySqlCommand(sql, connection);
-                await cmd.ExecuteNonQueryAsync();
-            }
-        }
+        await SyncIndexesAsync(connection, tableName, modelType, columns);
     }
 
     /// <summary>
@@ -517,55 +691,156 @@ public class TableSyncService
     private async Task SyncIndexesAsync(
         MySqlConnection connection,
         string tableName,
+        Type modelType,
         List<SchemaAnalyzer.ModelColumnDefinition> columns)
     {
-        var existingIndexes = await _schemaAnalyzer.GetTableIndexesAsync(connection, tableName);
+        var existingIndexes = (await _schemaAnalyzer.GetTableIndexesAsync(connection, tableName))
+            .Where(i => i.IndexName != "PRIMARY").ToList();
+        
+        var modelIndexes = GenerateModelIndexDefinitions(tableName, modelType, columns);
 
-        foreach (var col in columns)
+        var alterations = new List<string>();
+
+        // Indexes to drop or modify
+        foreach (var dbIndex in existingIndexes)
         {
-            string indexName = $"idx_{col.ColumnName}_{tableName}";
-            string uniqueIndexName = $"idx_uniq_{col.ColumnName}_{tableName}";
+            var modelMatch = modelIndexes.FirstOrDefault(m => m.IndexName == dbIndex.IndexName);
 
-            var hasIndex = existingIndexes.Any(i => i.IndexName == indexName && !i.IsUnique);
-            var hasUniqueIndex = existingIndexes.Any(i => i.IndexName == uniqueIndexName && i.IsUnique);
-
-            if (col.Index && col.Unique)
+            if (modelMatch.IndexName == null) // Check against a property of the struct, not the struct itself
             {
-                if (!hasUniqueIndex)
-                {
-                    _logger?.Info($"Creating UNIQUE INDEX on {tableName}.{col.ColumnName}");
-                    var sql = $"CREATE UNIQUE INDEX `{uniqueIndexName}` ON `{tableName}` (`{col.ColumnName}`)";
-
-                    using var cmd = new MySqlCommand(sql, connection);
-                    await cmd.ExecuteNonQueryAsync();
-                }
+                alterations.Add($"DROP INDEX `{dbIndex.IndexName}`");
             }
-            else if (col.Index)
+            else if (modelMatch.IsUnique != dbIndex.IsUnique || !modelMatch.Columns.SequenceEqual(dbIndex.Columns))
             {
-                if (!hasIndex)
-                {
-                    _logger?.Info($"Creating INDEX on {tableName}.{col.ColumnName}");
-                    var sql = $"CREATE INDEX `{indexName}` ON `{tableName}` (`{col.ColumnName}`)";
-
-                    using var cmd = new MySqlCommand(sql, connection);
-                    await cmd.ExecuteNonQueryAsync();
-                }
-            }
-            else if (col.Unique && !col.Primary)
-            {
-                var hasUniqueConstraint = existingIndexes.Any(i =>
-                    i.Columns.Count == 1 && i.Columns[0] == col.ColumnName && i.IsUnique && i.IndexName != "PRIMARY");
-
-                if (!hasUniqueConstraint)
-                {
-                    _logger?.Info($"Creating UNIQUE CONSTRAINT on {tableName}.{col.ColumnName}");
-                    var sql = $"ALTER TABLE `{tableName}` ADD UNIQUE (`{col.ColumnName}`)";
-
-                    using var cmd = new MySqlCommand(sql, connection);
-                    await cmd.ExecuteNonQueryAsync();
-                }
+                alterations.Add($"DROP INDEX `{dbIndex.IndexName}`");
+                alterations.Add($"ADD {(modelMatch.IsUnique ? "UNIQUE" : "")} INDEX `{modelMatch.IndexName}` ({string.Join(", ", modelMatch.Columns.Select(c => $"`{c}`"))})");
             }
         }
+
+        // Indexes to create
+        foreach (var modelIndex in modelIndexes)
+        {
+            if (!existingIndexes.Any(db => db.IndexName == modelIndex.IndexName))
+            {
+                alterations.Add($"ADD {(modelIndex.IsUnique ? "UNIQUE" : "")} INDEX `{modelIndex.IndexName}` ({string.Join(", ", modelIndex.Columns.Select(c => $"`{c}`"))})");
+            }
+        }
+
+        if (!alterations.Any())
+        {
+            _logger?.Info($"No index changes required for table '{tableName}'.");
+            return;
+        }
+
+        var alterSql = $"ALTER TABLE `{tableName}` " + string.Join(", ", alterations) + ";";
+        _logger?.Info($"Applying index changes to table '{tableName}':\n{alterSql}");
+
+        using var cmd = new MySqlCommand(alterSql, connection);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private List<(string IndexName, bool IsUnique, List<string> Columns)> GenerateModelIndexDefinitions(string tableName, Type modelType, List<SchemaAnalyzer.ModelColumnDefinition> columns)
+    {
+        var indexes = new List<(string IndexName, bool IsUnique, List<string> Columns)>();
+
+        // Single column indexes from [Column] attribute
+        foreach (var col in columns)
+        {
+            if (col.Index)
+            {
+                indexes.Add(($"idx_{tableName}_{col.ColumnName}", false, new List<string> { col.ColumnName }));
+            }
+            if (col.Unique && !col.Primary)
+            {
+                indexes.Add(($"uq_{tableName}_{col.ColumnName}", true, new List<string> { col.ColumnName }));
+            }
+        }
+
+        // Composite indexes from [CompositeIndex] attribute
+        var compositeIndexes = modelType.GetCustomAttributes<CompositeIndexAttribute>();
+        foreach (var indexAttr in compositeIndexes)
+        {
+            indexes.Add((indexAttr.IndexName, indexAttr.Unique, indexAttr.ColumnNames.ToList()));
+        }
+
+        return indexes;
+    }
+
+    private async Task SyncForeignKeysAsync(MySqlConnection connection, string tableName, Type modelType)
+    {
+        _logger?.Info($"Syncing foreign keys for table '{tableName}'.");
+        var dbForeignKeys = await GetRelatedForeignKeysAsync(connection, tableName);
+        var modelForeignKeys = GenerateModelForeignKeyDefinitions(modelType);
+
+        var alterations = new List<string>();
+
+        // Foreign keys to drop
+        foreach (var dbFk in dbForeignKeys)
+        {
+            if (!modelForeignKeys.Any(m => m.ConstraintName == dbFk.ConstraintName))
+            {
+                alterations.Add($"DROP FOREIGN KEY `{dbFk.ConstraintName}`");
+            }
+        }
+
+        // Foreign keys to add or modify
+        foreach (var modelFk in modelForeignKeys)
+        {
+            var dbMatch = dbForeignKeys.FirstOrDefault(db => db.ConstraintName == modelFk.ConstraintName);
+            if (dbMatch == null)
+            {
+                alterations.Add($"ADD CONSTRAINT `{modelFk.ConstraintName}` FOREIGN KEY (`{modelFk.ColumnName}`) REFERENCES `{modelFk.ReferencedTableName}` (`{modelFk.ReferencedColumnName}`) ON DELETE {modelFk.OnDelete} ON UPDATE {modelFk.OnUpdate}");
+            }
+            else if (dbMatch.ColumnName != modelFk.ColumnName || 
+                     dbMatch.ReferencedTableName != modelFk.ReferencedTableName || 
+                     dbMatch.ReferencedColumnName != modelFk.ReferencedColumnName || 
+                     dbMatch.OnDelete.ToString() != modelFk.OnDelete || 
+                     dbMatch.OnUpdate.ToString() != modelFk.OnUpdate)
+            {
+                alterations.Add($"DROP FOREIGN KEY `{dbMatch.ConstraintName}`");
+                alterations.Add($"ADD CONSTRAINT `{modelFk.ConstraintName}` FOREIGN KEY (`{modelFk.ColumnName}`) REFERENCES `{modelFk.ReferencedTableName}` (`{modelFk.ReferencedColumnName}`) ON DELETE {modelFk.OnDelete} ON UPDATE {modelFk.OnUpdate}");
+            }
+        }
+
+        if (!alterations.Any())
+        {
+            _logger?.Info($"No foreign key changes required for table '{tableName}'.");
+            return;
+        }
+
+        var alterSql = $"ALTER TABLE `{tableName}` " + string.Join(", ", alterations) + ";";
+        _logger?.Info($"Applying foreign key changes to table '{tableName}':\n{alterSql}");
+
+        using var cmd = new MySqlCommand(alterSql, connection);
+        await cmd.ExecuteNonQueryAsync();
+    }
+
+    private List<ForeignKeyInfo> GenerateModelForeignKeyDefinitions(Type modelType)
+    {
+        var fks = new List<ForeignKeyInfo>();
+        var tableName = GetTableName(modelType);
+
+        foreach (var prop in modelType.GetProperties())
+        {
+            var fkAttr = prop.GetCustomAttribute<ForeignKeyAttribute>();
+            var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
+
+            if (fkAttr != null && colAttr != null)
+            {
+                var fk = new ForeignKeyInfo
+                {
+                    ConstraintName = fkAttr.ConstraintName ?? $"fk_{tableName}_{colAttr.Name ?? prop.Name}",
+                    TableName = tableName,
+                    ColumnName = colAttr.Name ?? prop.Name,
+                    ReferencedTableName = fkAttr.ReferenceTable,
+                    ReferencedColumnName = fkAttr.ReferenceColumn,
+                    OnUpdate = fkAttr.OnUpdate.ToString().ToUpper(),
+                    OnDelete = fkAttr.OnDelete.ToString().ToUpper()
+                };
+                fks.Add(fk);
+            }
+        }
+        return fks;
     }
 
     /// <summary>

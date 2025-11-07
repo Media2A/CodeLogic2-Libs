@@ -83,11 +83,27 @@ public class DatabaseConfiguration
     public SslMode SslMode { get; set; } = SslMode.Preferred;
 
     /// <summary>
-    /// Gets or sets a value indicating whether to enable automatic table synchronization.
-    /// When true, tables will be automatically created/updated to match model definitions.
+    /// Gets or sets the synchronization mode for the table sync service.
+    /// Default is Safe.
+    /// </summary>
+    public SyncMode SyncMode { get; set; } = SyncMode.Safe;
+
+    /// <summary>
+    /// Gets or sets a value indicating whether to run synchronization for specified namespaces on startup.
+    /// Default is false.
+    /// </summary>
+    public bool SyncOnStartup { get; set; } = false;
+
+    /// <summary>
+    /// Gets or sets the list of namespaces to be synchronized if SyncOnStartup is true.
+    /// </summary>
+    public List<string> NamespacesToSync { get; set; } = new();
+
+    /// <summary>
+    /// Gets or sets a global default for whether to create a schema backup before applying sync changes.
     /// Default is true.
     /// </summary>
-    public bool EnableAutoSync { get; set; } = true;
+    public bool BackupOnSync { get; set; } = true;
 
     /// <summary>
     /// Gets or sets a value indicating whether to enable query result caching.
@@ -180,4 +196,30 @@ public enum SslMode
     /// Require SSL with full certificate verification.
     /// </summary>
     VerifyFull
+}
+
+/// <summary>
+/// Defines the strategy for the table synchronization service.
+/// </summary>
+public enum SyncMode
+{
+    /// <summary>
+    /// Synchronization is disabled.
+    /// </summary>
+    None,
+
+    /// <summary>
+    /// Performs only non-destructive changes (add columns, create tables/indexes). Fails on breaking changes.
+    /// </summary>
+    Safe,
+
+    /// <summary>
+    /// Allows breaking changes by attempting to drop and recreate constraints like foreign keys.
+    /// </summary>
+    Reconstruct,
+
+    /// <summary>
+    /// Forces the table schema to match the model by dropping and recreating the table. All data will be lost.
+    /// </summary>
+    Destructive
 }

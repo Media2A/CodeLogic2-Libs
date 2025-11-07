@@ -14,6 +14,11 @@ public class MigrationTracker
     private const string MigrationsFolderName = "migrations";
     private const string MigrationsHistoryFile = "migration_history.json";
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="MigrationTracker"/> class.
+    /// </summary>
+    /// <param name="dataDirectory">The base data directory for the library.</param>
+    /// <param name="logger">The logger for recording operations and errors.</param>
     public MigrationTracker(string dataDirectory, ILogger? logger = null)
     {
         _logger = logger;
@@ -26,13 +31,21 @@ public class MigrationTracker
     /// </summary>
     public class MigrationRecord
     {
+        /// <summary> Gets or sets the unique ID of the migration. </summary>
         public string Id { get; set; } = string.Empty;
+        /// <summary> Gets or sets the name of the table that was migrated. </summary>
         public string TableName { get; set; } = string.Empty;
+        /// <summary> Gets or sets the type of migration (e.g., "CREATE", "ALTER"). </summary>
         public string MigrationType { get; set; } = string.Empty; // "CREATE", "ALTER", "DROP", etc.
+        /// <summary> Gets or sets the timestamp when the migration was applied. </summary>
         public DateTime AppliedAt { get; set; }
+        /// <summary> Gets or sets the ID of the connection used for the migration. </summary>
         public string ConnectionId { get; set; } = "Default";
+        /// <summary> Gets or sets the description of the migration. </summary>
         public string? Description { get; set; }
+        /// <summary> Gets or sets a value indicating whether the migration was successful. </summary>
         public bool Success { get; set; }
+        /// <summary> Gets or sets the error message if the migration failed. </summary>
         public string? ErrorMessage { get; set; }
     }
 
