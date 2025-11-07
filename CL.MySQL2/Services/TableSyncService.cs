@@ -886,6 +886,7 @@ public class TableSyncService
             DataType.MediumBlob => "MEDIUMBLOB",
             DataType.LongBlob => "LONGBLOB",
             DataType.Uuid => "CHAR",
+            DataType.BinaryGuid => "BINARY",
             DataType.Enum => "ENUM",
             DataType.Set => "SET",
             DataType.Bool => "TINYINT",

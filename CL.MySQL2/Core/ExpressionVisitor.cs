@@ -289,11 +289,19 @@ public class ExpressionVisitor : System.Linq.Expressions.ExpressionVisitor
 
         if (expression is MemberExpression member)
         {
-            var getMethod = ((PropertyInfo)member.Member).GetGetMethod();
-            if (getMethod != null)
+            if (member.Member is PropertyInfo property)
+            {
+                var getMethod = property.GetGetMethod();
+                if (getMethod != null)
+                {
+                    var instance = GetValue(member.Expression);
+                    return getMethod.Invoke(instance, null);
+                }
+            }
+            else if (member.Member is System.Reflection.FieldInfo field)
             {
                 var instance = GetValue(member.Expression);
-                return getMethod.Invoke(instance, null);
+                return field.GetValue(instance);
             }
         }
 
