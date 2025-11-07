@@ -136,9 +136,15 @@ public enum DataType
     LongBlob,
 
     /// <summary>
-    /// A universally unique identifier (UUID/GUID).
+    /// A universally unique identifier (UUID/GUID) stored as CHAR(36).
     /// </summary>
     Uuid,
+
+    /// <summary>
+    /// A universally unique identifier (UUID/GUID) stored as BINARY(16) for optimal performance.
+    /// Recommended for new implementations requiring GUID storage.
+    /// </summary>
+    BinaryGuid,
 
     /// <summary>
     /// An enumeration of string values.

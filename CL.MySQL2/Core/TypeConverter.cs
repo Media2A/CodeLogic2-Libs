@@ -69,6 +69,14 @@ public static class TypeConverter
                 _ => value.ToString() ?? string.Empty
             },
 
+            DataType.BinaryGuid => value switch
+            {
+                Guid g => g.ToByteArray(),
+                byte[] b when b.Length == 16 => b,
+                string s when Guid.TryParse(s, out var g) => g.ToByteArray(),
+                _ => Guid.Empty.ToByteArray()
+            },
+
             DataType.Bool => value switch
             {
                 bool b => b ? (byte)1 : (byte)0,
@@ -126,6 +134,7 @@ public static class TypeConverter
             DataType.Time => ConvertToTime(value, underlyingType),
             DataType.Binary or DataType.VarBinary => ConvertToBinary(value, underlyingType),
             DataType.Uuid => ConvertToGuid(value, underlyingType),
+            DataType.BinaryGuid => ConvertToBinary(value, underlyingType),
             DataType.Bool => ConvertToBoolean(value, underlyingType),
             DataType.Json => ConvertFromJson(value, underlyingType),
             DataType.TinyInt or DataType.SmallInt or DataType.MediumInt or DataType.Int or DataType.BigInt =>
@@ -371,6 +380,7 @@ public static class TypeConverter
             DataType.MediumBlob => "MEDIUMBLOB",
             DataType.LongBlob => "LONGBLOB",
             DataType.Uuid => "CHAR(36)",
+            DataType.BinaryGuid => "BINARY(16)",
             DataType.Bool => "TINYINT(1)",
             DataType.Enum => size > 0 ? $"ENUM({size})" : "ENUM",
             DataType.Set => size > 0 ? $"SET({size})" : "SET",

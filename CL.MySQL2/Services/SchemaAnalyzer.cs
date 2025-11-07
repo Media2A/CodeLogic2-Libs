@@ -386,6 +386,7 @@ public class SchemaAnalyzer
             DataType.MediumBlob => "MEDIUMBLOB",
             DataType.LongBlob => "LONGBLOB",
             DataType.Uuid => "CHAR(36)",
+            DataType.BinaryGuid => "BINARY(16)",
             DataType.Enum => "ENUM",
             DataType.Set => "SET",
             DataType.Bool => "TINYINT(1)",
