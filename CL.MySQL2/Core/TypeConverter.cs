@@ -38,7 +38,7 @@ public static class TypeConverter
 
             DataType.Time => value switch
             {
-                TimeSpan ts => ts.ToString(@"hh\:mm\:ss"),
+                TimeSpan ts => ts.ToString(@"HH\:mm\:ss"),
                 TimeOnly t => t.ToString("HH:mm:ss"),
                 DateTime dt => dt.ToString("HH:mm:ss"),
                 string s => s,
