@@ -353,7 +353,15 @@ public class QueryBuilder<T> where T : class, new()
 
                 while (await reader.ReadAsync(cancellationToken))
                 {
-                    var pkValue = reader[$"{_tableName}_{pkProperty.Name}"];
+                    // Determine if we should use prefixed aliases
+                    bool usePrefixedAliases = _includeExpressions.Any();
+
+                    // Get primary key value
+                    var pkColumnName = usePrefixedAliases
+                        ? $"{_tableName}_{pkProperty.Name}"
+                        : (pkProperty.GetCustomAttribute<ColumnAttribute>()?.Name ?? pkProperty.Name);
+                    var pkValue = reader[pkColumnName];
+
                     if (pkValue == DBNull.Value) continue;
 
                     if (!mainEntities.TryGetValue(pkValue, out var mainEntity))
@@ -365,10 +373,14 @@ public class QueryBuilder<T> where T : class, new()
                             var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
                             if (colAttr != null)
                             {
-                                var alias = $"{_tableName}_{prop.Name}";
-                                if (reader.HasColumn(alias) && reader[alias] != DBNull.Value)
+                                // Use prefixed alias if includes are present, otherwise use actual column name
+                                var columnName = usePrefixedAliases
+                                    ? $"{_tableName}_{prop.Name}"
+                                    : (colAttr.Name ?? prop.Name);
+
+                                if (reader.HasColumn(columnName) && reader[columnName] != DBNull.Value)
                                 {
-                                    var convertedValue = TypeConverter.FromMySql(reader[alias], colAttr.DataType, prop.PropertyType);
+                                    var convertedValue = TypeConverter.FromMySql(reader[columnName], colAttr.DataType, prop.PropertyType);
                                     prop.SetValue(mainEntity, convertedValue);
                                 }
                             }
@@ -668,7 +680,7 @@ public class QueryBuilder<T> where T : class, new()
                     var childTableAttr = childType.GetCustomAttribute<TableAttribute>();
                     var childTableName = childTableAttr?.Name ?? childType.Name;
 
-                    var foreignKeyProp = childType.GetProperties().FirstOrDefault(p => 
+                    var foreignKeyProp = childType.GetProperties().FirstOrDefault(p =>
                         p.GetCustomAttribute<ForeignKeyAttribute>()?.ReferenceTable.Equals(parentTableName, StringComparison.OrdinalIgnoreCase) == true ||
                         p.GetCustomAttribute<ForeignKeyAttribute>()?.ReferenceTable.Equals(parentType.Name, StringComparison.OrdinalIgnoreCase) == true
                     );
@@ -693,7 +705,7 @@ public class QueryBuilder<T> where T : class, new()
                         var referencedColumn = fkAttr.ReferenceColumn;
                         var localColumn = navProperty.GetCustomAttribute<ColumnAttribute>()?.Name ?? navProperty.Name;
 
-                         _joinClauses.Add(new JoinClause { Type = JoinType.Left, Table = referencedTable, Condition = $"`{parentTableName}`.`{localColumn}` = `{referencedTable}`.`{referencedColumn}`" });
+                        _joinClauses.Add(new JoinClause { Type = JoinType.Left, Table = referencedTable, Condition = $"`{parentTableName}`.`{localColumn}` = `{referencedTable}`.`{referencedColumn}`" });
                         includedNavigations.Add((navProperty, childType, referencedTable));
                     }
                 }
@@ -703,14 +715,28 @@ public class QueryBuilder<T> where T : class, new()
         var sb = new StringBuilder();
         sb.Append("SELECT ");
 
-        if (_includeExpressions.Any())
+        if (_aggregateFunctions.Any())
+        {
+            var aggParts = _aggregateFunctions.Select(a =>
+                $"{a.Type.ToString().ToUpper()}(`{a.Column}`) AS `{a.Alias}`");
+
+            if (_selectColumns.Any())
+            {
+                sb.Append($"{string.Join(", ", _selectColumns.Select(c => $"`{c}`"))}, {string.Join(", ", aggParts)}");
+            }
+            else
+            {
+                sb.Append(string.Join(", ", aggParts));
+            }
+        }
+        else if (_includeExpressions.Any())
         {
             var allSelectColumns = new List<string>();
             var baseProps = typeof(T).GetProperties().Where(p => p.GetCustomAttribute<IgnoreAttribute>() == null);
             foreach (var prop in baseProps)
             {
                 var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
-                if(colAttr != null && prop.GetCustomAttribute<ForeignKeyAttribute>() == null)
+                if (colAttr != null && prop.GetCustomAttribute<ForeignKeyAttribute>() == null)
                 {
                     allSelectColumns.Add($"`{_tableName}`.`{colAttr.Name ?? prop.Name}` AS `{_tableName}_{prop.Name}`");
                 }
@@ -722,39 +748,13 @@ public class QueryBuilder<T> where T : class, new()
                 foreach (var prop in includedProps)
                 {
                     var colAttr = prop.GetCustomAttribute<ColumnAttribute>();
-                    if(colAttr != null)
+                    if (colAttr != null)
                     {
                         allSelectColumns.Add($"`{tableName}`.`{colAttr.Name ?? prop.Name}` AS `{tableName}_{prop.Name}`");
                     }
                 }
             }
             sb.Append(string.Join(", ", allSelectColumns.Distinct()));
-        }
-        else if (_selectColumns.Any())
-        {
-            sb.Append(string.Join(", ", _selectColumns.Select(c => $"`{c}`")));
-        }
-        else
-        {
-            sb.Append("*");
-        }
-
-
-        // SELECT clause
-        sb.Append("SELECT ");
-        if (_aggregateFunctions.Any())
-        {
-            var aggParts = _aggregateFunctions.Select(a =>
-                $"{a.Type.ToString().ToUpper()}({a.Column}) AS {a.Alias}");
-
-            if (_selectColumns.Any())
-            {
-                sb.Append($"{string.Join(", ", _selectColumns.Select(c => $"`{c}`"))}, {string.Join(", ", aggParts)}");
-            }
-            else
-            {
-                sb.Append(string.Join(", ", aggParts));
-            }
         }
         else if (_selectColumns.Any())
         {
