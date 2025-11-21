@@ -617,7 +617,7 @@ public class S3StorageService
                 Objects = response.S3Objects.Select(obj =>
                     S3ObjectInfo.FromS3Object(obj, bucketName, _publicUrl)).ToList(),
                 NextContinuationToken = response.NextContinuationToken,
-                IsTruncated = response.IsTruncated,
+                IsTruncated = response.IsTruncated ?? false,
                 CommonPrefixes = response.CommonPrefixes
             };
 

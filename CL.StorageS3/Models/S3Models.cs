@@ -124,8 +124,8 @@ public class S3ObjectInfo
         {
             Key = s3Object.Key,
             BucketName = bucketName,
-            Size = s3Object.Size,
-            LastModified = s3Object.LastModified,
+            Size = s3Object.Size ?? 0,
+            LastModified = s3Object.LastModified ?? DateTime.MinValue,
             ETag = s3Object.ETag,
             StorageClass = s3Object.StorageClass,
             Owner = s3Object.Owner?.DisplayName
@@ -149,7 +149,7 @@ public class S3ObjectInfo
             Key = key,
             BucketName = bucketName,
             Size = metadata.ContentLength,
-            LastModified = metadata.LastModified,
+            LastModified = metadata.LastModified ?? DateTime.MinValue,
             ETag = metadata.ETag,
             ContentType = metadata.Headers.ContentType,
             Metadata = metadata.Metadata.Keys.Cast<string>()
@@ -193,7 +193,7 @@ public class BucketInfo
         return new BucketInfo
         {
             Name = bucket.BucketName,
-            CreationDate = bucket.CreationDate
+            CreationDate = bucket.CreationDate ?? DateTime.MinValue
         };
     }
 }

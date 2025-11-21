@@ -22,12 +22,12 @@
 
   <ItemGroup>
     <!-- AWS S3 SDK -->
-    <PackageReference Include="AWSSDK.S3" Version="3.7.400" />
+    <PackageReference Include="AWSSDK.S3" Version="4.0.11.1" />
   </ItemGroup>
 
   <ItemGroup>
     <!-- CodeLogic Framework References -->
-    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
+    <ProjectReference Include="..\..\CodeLogic2\src\CodeLogic.csproj" />
     <ProjectReference Include="..\CL.Core\CL.Core.csproj" />
   </ItemGroup>
 

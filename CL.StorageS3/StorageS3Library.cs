@@ -359,14 +359,39 @@ public class StorageS3Library : ILibrary
 /// </summary>
 public class StorageS3Manifest : ILibraryManifest
 {
+    /// <summary>
+    /// Unique identifier for the library
+    /// </summary>
     public string Id => "cl.storages3";
+
+    /// <summary>
+    /// Display name of the library
+    /// </summary>
     public string Name => "CL.StorageS3";
+
+    /// <summary>
+    /// Current version of the library
+    /// </summary>
     public string Version => "2.0.0";
+
+    /// <summary>
+    /// Description of the library functionality
+    /// </summary>
     public string Description => "Amazon S3 and S3-compatible storage library for CodeLogic Framework";
+
+    /// <summary>
+    /// Author of the library
+    /// </summary>
     public string Author => "Media2A";
 
+    /// <summary>
+    /// List of library dependencies required by this library
+    /// </summary>
     public IReadOnlyList<LibraryDependency> Dependencies => new List<LibraryDependency>();
 
+    /// <summary>
+    /// Tags for categorizing and discovering the library
+    /// </summary>
     public IReadOnlyList<string> Tags => new List<string>
     {
         "Storage", "S3", "Cloud", "AWS"

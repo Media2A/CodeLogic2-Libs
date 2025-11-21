@@ -5,35 +5,61 @@ namespace CL.TwoFactorAuth.Models;
 /// </summary>
 public record TwoFactorKey
 {
+    private string? _secretKey;
+    private string? _issuerName;
+    private string? _userName;
+
     /// <summary>
     /// Gets the secret key in Base32 format
     /// </summary>
-    public required string SecretKey { get; init; }
+    public required string SecretKey
+    {
+        get => _secretKey ?? string.Empty;
+        init
+        {
+            _secretKey = value;
+            UpdateProvisioningUri();
+        }
+    }
 
     /// <summary>
     /// Gets the issuer name (typically application name)
     /// </summary>
-    public required string IssuerName { get; init; }
+    public required string IssuerName
+    {
+        get => _issuerName ?? string.Empty;
+        init
+        {
+            _issuerName = value;
+            UpdateProvisioningUri();
+        }
+    }
 
     /// <summary>
     /// Gets the user identifier or email
     /// </summary>
-    public required string UserName { get; init; }
+    public required string UserName
+    {
+        get => _userName ?? string.Empty;
+        init
+        {
+            _userName = value;
+            UpdateProvisioningUri();
+        }
+    }
 
     /// <summary>
     /// Gets the provisioning URI for QR code generation
     /// </summary>
-    public string ProvisioningUri { get; init; }
+    public string ProvisioningUri { get; private set; } = string.Empty;
 
-    public TwoFactorKey()
+    private void UpdateProvisioningUri()
     {
-        ProvisioningUri = GenerateProvisioningUri();
-    }
-
-    private string GenerateProvisioningUri()
-    {
-        return $"otpauth://totp/{Uri.EscapeDataString(IssuerName)}:{Uri.EscapeDataString(UserName)}" +
-               $"?secret={SecretKey}&issuer={Uri.EscapeDataString(IssuerName)}";
+        if (!string.IsNullOrEmpty(_secretKey) && !string.IsNullOrEmpty(_issuerName) && !string.IsNullOrEmpty(_userName))
+        {
+            ProvisioningUri = $"otpauth://totp/{Uri.EscapeDataString(_issuerName)}:{Uri.EscapeDataString(_userName)}" +
+                           $"?secret={_secretKey}&issuer={Uri.EscapeDataString(_issuerName)}";
+        }
     }
 }
 

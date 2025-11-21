@@ -14,7 +14,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\..\CodeLogic\CodeLogic.csproj" />
+    <ProjectReference Include="..\..\CodeLogic2\src\CodeLogic.csproj" />
   </ItemGroup>
 
 </Project>
